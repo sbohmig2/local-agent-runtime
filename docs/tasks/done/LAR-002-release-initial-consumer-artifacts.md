@@ -1,7 +1,7 @@
 ---
 tracker: LAR-002
 component: agent-runtime
-status: in-progress
+status: done
 priority: P0
 effort: S-M
 parallel_safe: no
@@ -12,7 +12,7 @@ tags: [lar, release]
 
 # LAR-002 - Release initial consumer artifacts
 
-**Status:** In progress
+**Status:** Done
 **Priority:** P0 - provide an immutable package-manager boundary
 **Effort:** S-M
 
@@ -30,12 +30,12 @@ changes instead of copied files, mutable branches, sibling paths, or submodules.
 
 ## Lean evidence
 
-- **Verdict:** pass; the implementation builds both language artifacts and the
-  private release proved the artifact path, but anonymous consumer installation
-  and distributable licensing remain incomplete.
-- **Current evidence:** authenticated private-release URLs are an unsuitable
-  default package-manager boundary.
-- **Smallest complete outcome:** a public MIT-licensed patch release, checksums,
+- **Verdict:** complete; public release `v0.1.1` is native GitHub-immutable and
+  resolves to the reviewed source commit.
+- **Evidence:** its exact four assets match the published SHA-256 manifest;
+  anonymous Python and TypeScript installation checks pass; private
+  vulnerability reporting is enabled; and independent review returned READY.
+- **Delivered outcome:** a public MIT-licensed patch release, checksums,
   isolated artifact tests, private vulnerability reporting, and anonymous
   installation proof.
 - **Necessary complexity:** aligned versions, clean-tree/source provenance,
@@ -116,3 +116,10 @@ qualification remain out of scope.
   references to unrelated projects, project-specific history, and unnecessary
   contributor-process files. A concise generic `AGENTS.md` retains architecture,
   security, and validation guidance for human and AI contributors.
+- 2026-09-07: The repository was recreated from the sanitized root so former
+  predecessor objects are unavailable locally and through public GitHub commit
+  and archive endpoints.
+- 2026-09-07: GitHub release immutability and private vulnerability reporting
+  were enabled. The annotated `v0.1.1` tag points to the reviewed source commit;
+  anonymous checksum and isolated package installation checks pass, and final
+  independent review returned READY.

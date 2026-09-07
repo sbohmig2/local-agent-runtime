@@ -37,7 +37,7 @@ tools, approvals, or user interface.
   adapter and must be reported rather than emulated dishonestly.
 - Keep provider selection and secrets out of portable consumer data.
 
-## Planned tasks
+## Tasks
 
-- LAR-002 — in progress — [Release initial consumer artifacts](../../tasks/LAR-002-release-initial-consumer-artifacts.md)
+- LAR-002 — done — [Release initial consumer artifacts](../../tasks/done/LAR-002-release-initial-consumer-artifacts.md)
 - LAR-001 — done — [Establish the provider-neutral local agent runtime](../../tasks/done/LAR-001-establish-provider-neutral-local-agent-runtime.md)

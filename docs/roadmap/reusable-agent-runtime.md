@@ -1,6 +1,6 @@
 ---
 initiative: reusable-agent-runtime
-status: active
+status: shipped
 created: 2026-09-07
 updated: 2026-09-07
 components:
@@ -28,11 +28,10 @@ and safety code.
    operation without consumer data or live product writes.
 
 Consumer integration remains owned by each consuming repository. Completion
-does not publish packages publicly, migrate either consumer, add a marketplace,
-or authorize provider egress with real data.
+does not publish to a public package registry, migrate a consumer, add a
+marketplace, or authorize provider egress with real data.
 
 ## Sequence
 
-LAR-001 establishes the implementation. LAR-002 publishes a reviewed, versioned
-runtime artifact before any consumer pins it. Registry publication remains
-deferred.
+LAR-001 established the implementation. LAR-002 published reviewed, immutable
+consumer artifacts. Registry publication remains deferred.
