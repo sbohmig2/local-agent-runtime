@@ -46,8 +46,11 @@ same released contract without importing another application.
 ## Distribution direction
 
 The canonical source lives in this independent repository. Consumers pin
-released versions. The first implementation should produce a Python package,
-an optional authenticated loopback gateway, and a generated TypeScript client.
+released versions. The implementation produces a Python package, an optional
+authenticated loopback gateway, and a generated TypeScript client. Its
+additive Node host entry point contains backend infrastructure only. By design,
+React components, pages, HTML, browser-side model code, and a shared visual
+language are outside this repository; each consuming product owns those choices.
 The repository is distributed under the MIT License so consumer projects can
 reuse pinned releases without source coupling. Publication to public registries
 remains a later owner decision rather than a prerequisite for reuse.

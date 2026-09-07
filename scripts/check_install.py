@@ -52,7 +52,7 @@ try:
                 assert response.status == 200
                 assert json.load(response) == {
                     "status": "available",
-                    "package_version": "0.1.2",
+                    "package_version": "0.1.3",
                     "api_version": "1.0.0",
                 }
                 print("Isolated wheel imports and authenticated gateway startup passed.")

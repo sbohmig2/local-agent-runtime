@@ -19,19 +19,25 @@ It also owns the separate [embedding capability](../embeddings.md): configured
 vector spaces, bounded text batches, compatibility fingerprints and vector
 validation. It does not own chunking, indexes or retrieval.
 
-It does not own a consumer's evidence, financial facts, retrieval, workflows,
-tools, approvals, or user interface.
+It does not own a consumer's evidence, domain facts, retrieval, workflows,
+tools, approvals, or user interface. The TypeScript host entry point is
+backend-only. React components, pages, HTML, browser-side model code, charts,
+chips, render instructions, and product action semantics are intentionally
+consumer-owned and must not be added to this package.
 
 ## Direction
 
 - Provide one Python package and optional local process from this repository.
-- Generate a TypeScript client from the versioned gateway contract.
+- Generate a TypeScript client from the versioned gateway contract and expose
+  optional Node-only host infrastructure through an additive subpath.
 - Keep product clients on stable runtime concepts rather than provider SDK
   payloads.
 - Model provider choice as configured profiles. The runtime does not expose an
   unconstrained marketplace or arbitrary executable/endpoint selector.
 - Let consumer applications register bounded tool capabilities and execute them
   through their own authorization layer.
+- Forward application-owned structured schemas as data-validation contracts,
+  never as UI schemas or authorization to perform an action.
 - Preserve truthful capability differences. Token streaming, structured output,
   tool requests, model enumeration, and session continuation may differ by
   adapter and must be reported rather than emulated dishonestly.
@@ -39,6 +45,7 @@ tools, approvals, or user interface.
 
 ## Tasks
 
+- LAR-004 — review — [Deliver the reusable TypeScript host toolkit](../../tasks/LAR-004-deliver-reusable-typescript-host-toolkit.md)
 - LAR-003 — done — [Publish the typed Python distribution](../../tasks/done/LAR-003-publish-typed-python-distribution.md)
 - LAR-002 — done — [Release initial consumer artifacts](../../tasks/done/LAR-002-release-initial-consumer-artifacts.md)
 - LAR-001 — done — [Establish the provider-neutral local agent runtime](../../tasks/done/LAR-001-establish-provider-neutral-local-agent-runtime.md)

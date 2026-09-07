@@ -69,16 +69,22 @@ def release_version() -> str:
         package = json.loads((CLIENT / "package.json").read_text())
         lock = json.loads((CLIENT / "package-lock.json").read_text())
         version_source = (ROOT / "src/local_agent_runtime/version.py").read_text()
+        host_contracts = (CLIENT / "src/host/contracts.ts").read_text()
         contract = json.loads((ROOT / "contracts/openapi.json").read_text())
     except (KeyError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ReleaseError("Release metadata is malformed") from exc
     match = re.search(r'^PACKAGE_VERSION = "([^"]+)"$', version_source, re.MULTILINE)
     source_version = match.group(1) if match else None
+    host_match = re.search(
+        r'^export const RUNTIME_PACKAGE_VERSION = "([^"]+)";$', host_contracts, re.MULTILINE
+    )
+    host_version = host_match.group(1) if host_match else None
     versions = {
         "pyproject": python_version,
         "python export": source_version,
         "TypeScript package": package.get("version"),
         "TypeScript lock": lock.get("version"),
+        "TypeScript host": host_version,
     }
     if any(value != python_version for value in versions.values()):
         raise ReleaseError(f"Release version mismatch: {versions}")
@@ -271,9 +277,11 @@ def check_typescript_tarball(tarball: Path) -> None:
                 "--input-type=module",
                 "--eval",
                 "import { RuntimeClient } from '@local-agent-runtime/client'; "
+                "import { SessionCoordinator } from '@local-agent-runtime/client/host'; "
                 "if (typeof RuntimeClient !== 'function' || "
                 "typeof RuntimeClient.prototype.health !== 'function' || "
-                "typeof RuntimeClient.prototype.createSession !== 'function') process.exit(1);",
+                "typeof RuntimeClient.prototype.createSession !== 'function' || "
+                "typeof SessionCoordinator !== 'function') process.exit(1);",
             ],
             cwd=directory,
         )

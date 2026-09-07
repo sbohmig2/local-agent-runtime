@@ -1,6 +1,6 @@
 ---
 initiative: reusable-agent-runtime
-status: shipped
+status: active
 created: 2026-09-07
 updated: 2026-09-07
 components:
@@ -26,6 +26,8 @@ and safety code.
 4. Provide an authenticated loopback gateway and generated TypeScript client.
 5. Prove deterministic adapter behavior and isolated synthetic end-to-end
    operation without consumer data or live product writes.
+6. Provide reusable Node host primitives once two independent consumers
+   demonstrate the same process, MCP, session, and local HTTP integration need.
 
 Consumer integration remains owned by each consuming repository. Completion
 does not publish to a public package registry, migrate a consumer, add a
@@ -33,5 +35,6 @@ marketplace, or authorize provider egress with real data.
 
 ## Sequence
 
-LAR-001 established the implementation. LAR-002 published reviewed, immutable
-consumer artifacts. Registry publication remains deferred.
+LAR-001 established the implementation. LAR-002 and LAR-003 published reviewed,
+immutable consumer artifacts. LAR-004 adds the independently earned TypeScript
+host toolkit. Registry publication remains deferred.

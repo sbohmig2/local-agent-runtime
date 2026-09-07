@@ -16,6 +16,20 @@ Local Agent Runtime lives in its own repository. It produces:
   independence; and
 - a TypeScript client generated from the versioned gateway contract.
 
+Once multiple independent applications need the same Node integration, the
+TypeScript release may also expose an additive backend-only host toolkit. It may
+own process supervision, bounded session/tool coordination, MCP transport, and
+authenticated loopback HTTP mechanics only through injected product policy. It
+must not own consumer prompts, tool permissions, approval rules, databases, or
+configuration formats.
+
+The toolkit is server-side infrastructure even when a consumer chooses to put
+its authenticated HTTP adapter in front of a browser. React components, pages,
+HTML, browser-side state or model code, charts, chips, rendering semantics, and
+product action identifiers stay in each consuming application. Structured
+output schemas may cross the runtime boundary only as consumer-owned data
+validation contracts; they do not prescribe presentation or grant authority.
+
 Consumer applications use pinned released versions. They do not import one
 another, copy runtime source, use Git
 submodules, or track a mutable branch.
@@ -46,8 +60,9 @@ product database or a remote multi-tenant service.
 
 - Existing consumer code may serve as reference evidence, never as a permanent
   private dependency. Each consumer migration remains separately owned.
-- A consumer may keep its own Node host for browser and operating-system
-  integration while delegating generic provider behavior through the gateway.
+- A consumer keeps a thin Node composition layer for browser and
+  operating-system integration while reusing the optional shared host toolkit
+  or directly using the gateway client.
 - Package and protocol compatibility require versioning and conformance tests.
 - Public registry publication, hosted operation, automatic fallback, billing,
   and a provider marketplace remain deferred.

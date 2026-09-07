@@ -3,9 +3,14 @@
 This is the only approved pickup list. Task frontmatter is the status source of
 truth.
 
+## Review lane
+
+- [LAR-004 - Deliver the reusable TypeScript host toolkit](./LAR-004-deliver-reusable-typescript-host-toolkit.md)
+  - additive Node host primitives for multiple independent consumers.
+
 ## Active lane
 
-No task is active.
+No implementation task is active.
 
 ## Queued lane
 

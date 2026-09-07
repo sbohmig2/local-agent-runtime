@@ -6,3 +6,4 @@ owned operations.
 
 - [v0.1.1](./v0.1.1.md) - initial public Python runtime and TypeScript client artifacts.
 - [v0.1.2](./v0.1.2.md) - PEP 561 typed-package marker for strict Python consumers.
+- [v0.1.3](./v0.1.3.md) - reusable backend-only TypeScript host toolkit.

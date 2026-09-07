@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "local-agent-runtime"
-version = "0.1.2"
+version = "0.1.3"
 description = "Provider-neutral local agent runtime for reusable application integrations"
 readme = "README.md"
 license = "MIT"

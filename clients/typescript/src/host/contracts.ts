@@ -1,0 +1,178 @@
+import type {
+  EmbeddingProfilesResponse,
+  EmbeddingRequest,
+  EmbeddingResponse,
+  EventsResponse,
+  HealthResponse,
+  ProfilesResponse,
+  ReasoningProfile,
+  SessionEvent,
+  SessionRequest,
+  SessionResponse,
+  ToolResultsRequest
+} from "../generated.js";
+
+export const RUNTIME_PACKAGE_VERSION = "0.1.3";
+export const RUNTIME_API_VERSION = "1.0.0";
+
+export interface RuntimePort {
+  health(signal?: AbortSignal): Promise<HealthResponse>;
+  profiles(includeHealth?: boolean, signal?: AbortSignal): Promise<ProfilesResponse>;
+  selectProfile(body: { profile_id: string }, signal?: AbortSignal): Promise<ProfilesResponse>;
+  createSession(body: SessionRequest, signal?: AbortSignal): Promise<SessionResponse>;
+  session(sessionId: string, signal?: AbortSignal): Promise<SessionResponse>;
+  events(sessionId: string, after?: number, signal?: AbortSignal): Promise<EventsResponse>;
+  streamEvents(
+    sessionId: string,
+    after?: number,
+    signal?: AbortSignal
+  ): AsyncGenerator<SessionEvent>;
+  submitToolResults(
+    sessionId: string,
+    body: ToolResultsRequest,
+    signal?: AbortSignal
+  ): Promise<SessionResponse>;
+  continueSession(
+    sessionId: string,
+    body: { prompt: string },
+    signal?: AbortSignal
+  ): Promise<SessionResponse>;
+  cancelSession(sessionId: string, signal?: AbortSignal): Promise<SessionResponse>;
+  embeddingProfiles(signal?: AbortSignal): Promise<EmbeddingProfilesResponse>;
+  embed(body: EmbeddingRequest, signal?: AbortSignal): Promise<EmbeddingResponse>;
+}
+
+export interface CatalogTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface ToolCallResult {
+  output: unknown;
+  isError: boolean;
+}
+
+export interface ToolCatalog {
+  instructions(): readonly CatalogInstruction[];
+  listTools(signal?: AbortSignal): Promise<readonly CatalogTool[]>;
+  callTool(
+    name: string,
+    argumentsValue: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<ToolCallResult>;
+  close(): Promise<void>;
+}
+
+export interface CatalogInstruction {
+  source: string;
+  text: string;
+}
+
+export interface PublicProfile {
+  id: string;
+  providerId: string;
+  model: string;
+  processing: "local" | "external";
+  privateProcessingEligible: boolean;
+  qualifiedTasks: readonly string[];
+  qualification: "qualified" | "unqualified";
+  selected: boolean;
+  capabilities: Record<string, boolean>;
+  health?: {
+    status: "available" | "unavailable" | "inconclusive";
+    authenticated: boolean | null;
+    installed: boolean | null;
+    compatible: boolean | null;
+    detailCode: string | null;
+    effectiveModel: string | null;
+  };
+}
+
+export interface HostEvent {
+  sequence: number;
+  type:
+    | "session_started"
+    | "model_working"
+    | "tools_requested"
+    | "tools_completed"
+    | "approval_required"
+    | "completed"
+    | "failed"
+    | "canceled";
+  occurredAt: string;
+  detail: Record<string, unknown>;
+}
+
+export type HostSessionStatus =
+  | "running"
+  | "approval_required"
+  | "completed"
+  | "failed"
+  | "canceled";
+
+export interface HostSession {
+  id: string;
+  profileId: string;
+  providerId: string;
+  requestedModel: string;
+  effectiveModel: string | null;
+  effectiveUpstream: string | null;
+  processing: "local" | "external";
+  status: HostSessionStatus;
+  finalText: string | null;
+  failureCode: string | null;
+  eventCount: number;
+}
+
+export interface StartSessionRequest {
+  prompt: string;
+  profileId?: string;
+  taskCode?: string;
+  privateProcessing?: boolean;
+  allowExternalProcessing?: boolean;
+  outputSchema?: Record<string, unknown>;
+}
+
+export type ToolDecision = "execute" | "approval";
+export interface ToolAuthorizationContext {
+  request: Readonly<{
+    id: string;
+    name: string;
+    arguments: Readonly<Record<string, unknown>>;
+  }>;
+  session: Readonly<HostSession>;
+  profile: Readonly<PublicProfile>;
+}
+export type ToolAuthorizer = (
+  context: Readonly<ToolAuthorizationContext>
+) => ToolDecision | Promise<ToolDecision>;
+export type ProcessingAuthorizer = (
+  request: Readonly<StartSessionRequest>,
+  profile: Readonly<PublicProfile>
+) => "allow" | "deny" | Promise<"allow" | "deny">;
+
+export function toPublicProfile(profile: ReasoningProfile): PublicProfile {
+  const value: PublicProfile = {
+    id: profile.id,
+    providerId: profile.provider_id,
+    model: profile.model,
+    processing: profile.processing,
+    privateProcessingEligible: profile.allow_private_processing,
+    qualifiedTasks: [...profile.qualified_tasks],
+    qualification: profile.qualification.status,
+    selected: profile.selected,
+    capabilities: { ...profile.capabilities }
+  };
+  if (profile.health !== undefined) {
+    value.health = {
+      status: profile.health.status,
+      authenticated: profile.health.authenticated,
+      installed: profile.health.installed,
+      compatible: profile.health.compatible,
+      detailCode: profile.health.detail_code,
+      effectiveModel: profile.health.effective_model
+    };
+  }
+  return value;
+}

@@ -33,13 +33,14 @@ providers receive the role-tagged conversation as one escaped JSON document,
 so the separation prevents structural prompt injection but is not a
 provider-enforced privilege boundary.
 
-## Node or language-independent consumer
+## Node backend or language-independent consumer
 
-A Node backend can start one pinned Python gateway process for its deployment
-and install the matching packed TypeScript client. The backend
-holds the random bearer token and calls loopback. It exposes product-shaped
-operations to its browser UI; the runtime token, raw runtime gateway, provider
-credentials, and provider configuration never enter the browser.
+A Node backend can install the matching packed TypeScript client. Its root
+entry point is a typed gateway client. The optional `/host` entry point adds
+Node-only process supervision, MCP transport, bounded session coordination, and
+an authenticated local HTTP adapter. Both entry points ship in the same tarball.
+Frontend components, HTML, view models, and browser-side model code are outside
+the package by design and remain owned by each consuming product.
 
 ```ts
 import { RuntimeClient } from "@local-agent-runtime/client";
@@ -52,6 +53,51 @@ const runtime = new RuntimeClient({
 const profiles = await runtime.profiles(false);
 ```
 
+The host toolkit is assembled by backend composition code. Product instructions,
+processing policy, tool authorization, MCP server specifications, structured
+output schemas, and HTTP route choice are injected by the consumer. An
+application may call `SessionCoordinator` directly from its backend or attach
+`HostHttpServer` when it needs a loopback HTTP/SSE boundary. The HTTP adapter is
+transport infrastructure, not a user-interface framework.
+
+MCP processes are backend dependencies selected by the consumer. Their
+handshake instructions are exposed as attributed catalog metadata but are never
+promoted automatically into the trusted system-instruction channel. A consumer
+may review and deliberately incorporate such text into its own trusted
+instructions; merely configuring a server does not grant its text that status.
+The host tarball therefore includes the exactly pinned official MCP client and
+its runtime dependencies even when a consumer uses only the root client entry
+point. This intentional supply-chain surface is checked through the consumer's
+lockfile and package audit.
+
+```ts
+import {
+  HostHttpServer,
+  McpToolCatalog,
+  RuntimeSupervisor,
+  SessionCoordinator,
+  SupervisedRuntime,
+} from "@local-agent-runtime/client/host";
+```
+
+Structured output is a validated data contract selected by the application.
+For example, one product may map a result to graph data and another to text or
+an action proposal. The runtime does not define components, rendering hints,
+chips, graphs, page layouts, action identifiers, or the authority to execute a
+proposed action. Those remain consumer backend and UI responsibilities.
+
+Embedding profiles and embedding calls remain part of the root generated
+client and are also forwarded by `SupervisedRuntime`. Consumers own chunking,
+indexes, retrieval, persistence, and any browser-facing embedding workflow.
+
+Tool policy receives the requested name and arguments together with the
+provider-neutral session and profile context. It may decide asynchronously and
+must return the exact `execute` decision; every other result fails closed to an
+approval-required terminal state. Processing policy is reapplied before every
+initial and continuation prompt submission. Session starts reserve capacity
+before asynchronous work, and runtime/MCP/HTTP loops have explicit time,
+retention, connection, result-size, and restart bounds.
+
 Use one gateway instance, private state directory, configuration, and token per
 consumer security boundary. A single installation of the Python package may be
 reused, but products should not share sessions or one bearer token. The gateway
@@ -60,7 +106,7 @@ unauthenticated requests.
 
 ## Artifact compatibility
 
-The Python package and TypeScript client currently share release version 0.1.2,
+The Python package and TypeScript client currently share release version 0.1.3,
 while the HTTP contract advertises API version 1.0.0. A consumer pins both
 artifacts from the same release and keeps its lockfiles. Upgrade work should:
 
@@ -72,7 +118,7 @@ artifacts from the same release and keeps its lockfiles. Upgrade work should:
 5. roll back by restoring the prior artifact pins, never by copying old source.
 
 The current TypeScript package remains `private` to prevent accidental registry
-publication. The initial GitHub release attaches the wheel, source archive,
+publication. Each GitHub release attaches the wheel, source archive,
 `npm pack` tarball, and `SHA256SUMS`; it does not publish to PyPI or npm. Release
 maintainers build all artifacts from a clean checkout with:
 

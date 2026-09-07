@@ -27,7 +27,7 @@ from scripts.build_release import (
     write_manifest,
 )
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 COMMIT = "1" * 40
 
 
@@ -174,11 +174,15 @@ def test_release_version_rejects_mismatch(tmp_path: Path, monkeypatch: pytest.Mo
     source = tmp_path / "src/local_agent_runtime"
     contracts = tmp_path / "contracts"
     client.mkdir(parents=True)
+    (client / "src/host").mkdir(parents=True)
     source.mkdir(parents=True)
     contracts.mkdir()
     (tmp_path / "pyproject.toml").write_text(f'[project]\nversion = "{VERSION}"\n')
-    (client / "package.json").write_text(json.dumps({"version": "0.1.2"}))
+    (client / "package.json").write_text(json.dumps({"version": "0.1.3"}))
     (client / "package-lock.json").write_text(json.dumps({"version": "0.1.0"}))
+    (client / "src/host/contracts.ts").write_text(
+        f'export const RUNTIME_PACKAGE_VERSION = "{VERSION}";\n'
+    )
     (source / "version.py").write_text('PACKAGE_VERSION = "0.1.0"\n')
     (contracts / "openapi.json").write_text(json.dumps({"info": {"version": "1.0.0"}}))
     monkeypatch.setattr(build_release, "ROOT", tmp_path)
@@ -195,11 +199,15 @@ def test_release_version_rejects_api_contract_mismatch(
     source = tmp_path / "src/local_agent_runtime"
     contracts = tmp_path / "contracts"
     client.mkdir(parents=True)
+    (client / "src/host").mkdir(parents=True)
     source.mkdir(parents=True)
     contracts.mkdir()
     (tmp_path / "pyproject.toml").write_text(f'[project]\nversion = "{VERSION}"\n')
     (client / "package.json").write_text(json.dumps({"version": VERSION}))
     (client / "package-lock.json").write_text(json.dumps({"version": VERSION}))
+    (client / "src/host/contracts.ts").write_text(
+        f'export const RUNTIME_PACKAGE_VERSION = "{VERSION}";\n'
+    )
     (source / "version.py").write_text(f'PACKAGE_VERSION = "{VERSION}"\n')
     (contracts / "openapi.json").write_text(json.dumps({"info": {"version": "9.9.9"}}))
     monkeypatch.setattr(build_release, "ROOT", tmp_path)

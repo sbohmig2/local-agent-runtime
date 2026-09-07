@@ -236,7 +236,7 @@ def test_gateway_embeddings_auth_ipv6_and_schemas(tmp_path: Path) -> None:
             assert_schema("HealthResponse", health.json())
             assert health.json() == {
                 "status": "available",
-                "package_version": "0.1.2",
+                "package_version": "0.1.3",
                 "api_version": "1.0.0",
             }
             created = await client.post(
