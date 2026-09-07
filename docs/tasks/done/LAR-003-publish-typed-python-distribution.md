@@ -1,7 +1,7 @@
 ---
 tracker: LAR-003
 component: agent-runtime
-status: in-progress
+status: done
 priority: P0
 effort: XS
 parallel_safe: no
@@ -12,7 +12,7 @@ tags: [lar, release]
 
 # LAR-003 - Publish the typed Python distribution
 
-**Status:** In progress
+**Status:** Done
 **Priority:** P0 - unblock strict consumer type checking
 **Effort:** XS
 
@@ -56,3 +56,8 @@ live provider calls remain out of scope.
   `READY`. Claude's two durability suggestions—checking the rebuilt wheel and
   matching the isolated mypy version to the lockfile—were incorporated before
   the fresh Grok verdict.
+- 2026-09-07: Source commit `f2318be` passed GitHub CI. The public `v0.1.2`
+  release is GitHub-native immutable and contains exactly the wheel, source
+  distribution, TypeScript client, and checksum manifest. Anonymous downloads,
+  manifest verification, isolated gateway startup, strict mypy consumption,
+  and TypeScript installation all pass. LAR-003 is complete.

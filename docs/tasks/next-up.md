@@ -5,10 +5,7 @@ truth.
 
 ## Active lane
 
-- [LAR-003 - Publish the typed Python distribution](./LAR-003-publish-typed-python-distribution.md)
-  — publish the typed Python distribution correction. Consumer
-  integration exposed a missing PEP 561 marker in `v0.1.1`; implementation and
-  public patch release are in progress.
+No task is active.
 
 ## Queued lane
 
@@ -16,5 +13,7 @@ No additional task is approved.
 
 ## Completed
 
+- [LAR-003 - Publish the typed Python distribution](./done/LAR-003-publish-typed-python-distribution.md)
+  - immutable public `v0.1.2` artifacts with PEP 561 typing metadata.
 - [LAR-002 - Release initial consumer artifacts](./done/LAR-002-release-initial-consumer-artifacts.md)
   - immutable public GitHub `v0.1.1` artifacts with distributable MIT licensing.
