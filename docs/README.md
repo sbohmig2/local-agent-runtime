@@ -23,8 +23,9 @@ Consumer installation and process boundaries are described in
 ## Current stage
 
 The repository baseline, first implementation, and immutable public
-MIT-licensed `v0.1.2` consumer release are complete. Live-provider
+MIT-licensed `v0.1.3` consumer release are complete. Live-provider
 qualification remains distinct work. See the completed
 [LAR-001](./tasks/done/LAR-001-establish-provider-neutral-local-agent-runtime.md),
 [LAR-002](./tasks/done/LAR-002-release-initial-consumer-artifacts.md), and
-[LAR-003](./tasks/done/LAR-003-publish-typed-python-distribution.md).
+[LAR-003](./tasks/done/LAR-003-publish-typed-python-distribution.md), and
+[LAR-004](./tasks/done/LAR-004-deliver-reusable-typescript-host-toolkit.md).

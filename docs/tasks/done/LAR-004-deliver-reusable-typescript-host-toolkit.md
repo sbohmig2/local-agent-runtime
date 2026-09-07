@@ -1,7 +1,7 @@
 ---
 tracker: LAR-004
 component: agent-runtime
-status: review
+status: done
 priority: P0
 effort: L
 parallel_safe: no
@@ -12,7 +12,7 @@ tags: [lar]
 
 # LAR-004 - Deliver the reusable TypeScript host toolkit
 
-**Status:** Review
+**Status:** Done
 **Priority:** P0 - two independent consumers need the same secure local host boundary
 **Effort:** L
 
@@ -179,5 +179,13 @@ LAR-003 supplied the typed immutable `v0.1.2` baseline.
   READY after independently probing hanging cancellation, timeout and approval
   settlement, iterator cleanup, cumulative tool-round bounds, event ordering,
   concurrency, and absence of UI or provider-specific host code. Grok's fresh
-  review is also READY. Commit, immutable `v0.1.3` publication, and task closure
-  remain owner-gated.
+  review is also READY.
+- 2026-09-07: Owner-authorized source commit `326a62a` passed GitHub CI. The
+  public `v0.1.3` release is GitHub-native immutable and contains exactly the
+  wheel, source distribution, TypeScript client, and checksum manifest.
+  Anonymous downloads verify against source
+  `326a62a898080839171d76b23636e9cb00cfaaf4`; wheel, source, and client SHA-256
+  values are `8d7b707b8f3855ed105c9b775da3e9cca995a82674027e64f90fa00776bcfbb4`,
+  `4634eb65fb2ac990ead40d8a494b5d5d422a0ecc7caee3bf3854bb84de525364`,
+  and `ae34bdcdb6dd1599e63565791bc6c567d82b89e899352111f91d562dc2b476bd`.
+  LAR-004 is complete.

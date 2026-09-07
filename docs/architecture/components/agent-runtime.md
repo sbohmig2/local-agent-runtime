@@ -45,7 +45,7 @@ consumer-owned and must not be added to this package.
 
 ## Tasks
 
-- LAR-004 — review — [Deliver the reusable TypeScript host toolkit](../../tasks/LAR-004-deliver-reusable-typescript-host-toolkit.md)
+- LAR-004 — done — [Deliver the reusable TypeScript host toolkit](../../tasks/done/LAR-004-deliver-reusable-typescript-host-toolkit.md)
 - LAR-003 — done — [Publish the typed Python distribution](../../tasks/done/LAR-003-publish-typed-python-distribution.md)
 - LAR-002 — done — [Release initial consumer artifacts](../../tasks/done/LAR-002-release-initial-consumer-artifacts.md)
 - LAR-001 — done — [Establish the provider-neutral local agent runtime](../../tasks/done/LAR-001-establish-provider-neutral-local-agent-runtime.md)

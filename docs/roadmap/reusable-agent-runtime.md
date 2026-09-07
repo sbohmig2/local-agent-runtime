@@ -1,6 +1,6 @@
 ---
 initiative: reusable-agent-runtime
-status: active
+status: shipped
 created: 2026-09-07
 updated: 2026-09-07
 components:
@@ -36,5 +36,6 @@ marketplace, or authorize provider egress with real data.
 ## Sequence
 
 LAR-001 established the implementation. LAR-002 and LAR-003 published reviewed,
-immutable consumer artifacts. LAR-004 adds the independently earned TypeScript
-host toolkit. Registry publication remains deferred.
+immutable consumer artifacts. LAR-004 published the independently earned,
+backend-only TypeScript host toolkit in immutable `v0.1.3`. Registry publication
+remains deferred.
