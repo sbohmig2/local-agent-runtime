@@ -1,0 +1,24 @@
+{
+  "error": {
+    "error": {
+      "code": "processing_not_allowed",
+      "message": "External processing is not allowed"
+    }
+  },
+  "events": [
+    {
+      "sequence": 1,
+      "type": "session_created",
+      "occurred_at": "2026-09-07T10:00:00+00:00",
+      "payload": {}
+    },
+    {
+      "sequence": 2,
+      "type": "session_completed",
+      "occurred_at": "2026-09-07T10:00:01+00:00",
+      "payload": {
+        "text": "Grüße"
+      }
+    }
+  ]
+}

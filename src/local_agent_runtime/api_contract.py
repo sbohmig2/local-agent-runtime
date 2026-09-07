@@ -1,0 +1,312 @@
+"""Canonical versioned gateway schemas; shared by generation and conformance tests."""
+
+from typing import Any
+
+API_VERSION = "1.0.0"
+
+
+def ref(name: str) -> dict[str, str]:
+    return {"$ref": f"#/components/schemas/{name}"}
+
+
+def array(items: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "array", "items": items}
+
+
+def obj(properties: dict[str, Any], optional: tuple[str, ...] = ()) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": [key for key in properties if key not in optional],
+        "additionalProperties": False,
+    }
+
+
+STRING = {"type": "string"}
+BOOL = {"type": "boolean"}
+NUMBER = {"type": "number"}
+INTEGER = {"type": "integer"}
+NULLABLE_STRING = {"type": ["string", "null"]}
+JSON_OBJECT = {"type": "object", "additionalProperties": {}}
+USAGE = {"type": "object", "additionalProperties": NUMBER}
+PROCESSING = {"type": "string", "enum": ["local", "external"]}
+
+SCHEMAS: dict[str, dict[str, Any]] = {
+    "ErrorDetail": obj({"code": STRING, "message": STRING}),
+    "ErrorResponse": obj({"error": ref("ErrorDetail")}),
+    "HealthResponse": obj(
+        {
+            "status": {"const": "available", "type": "string"},
+            "package_version": STRING,
+            "api_version": STRING,
+        }
+    ),
+    "ProviderHealth": obj(
+        {
+            "status": {"type": "string", "enum": ["available", "unavailable", "inconclusive"]},
+            "authenticated": {"type": ["boolean", "null"]},
+            "installed": {"type": ["boolean", "null"]},
+            "compatible": {"type": ["boolean", "null"]},
+            "detail_code": NULLABLE_STRING,
+            "effective_model": NULLABLE_STRING,
+        }
+    ),
+    "Capabilities": obj(
+        {
+            name: BOOL
+            for name in [
+                "text_generation",
+                "structured_output",
+                "tool_requests",
+                "token_streaming",
+                "conversation_continuation",
+                "model_discovery",
+                "token_limit_control",
+            ]
+        }
+    ),
+    "ReasoningProfile": obj(
+        {
+            "id": STRING,
+            "provider_id": STRING,
+            "driver": STRING,
+            "model": STRING,
+            "configured": BOOL,
+            "processing": PROCESSING,
+            "allow_private_processing": BOOL,
+            "qualified_tasks": array(STRING),
+            "qualification": obj(
+                {
+                    "status": {"type": "string", "enum": ["qualified", "unqualified"]},
+                    "tasks": array(STRING),
+                }
+            ),
+            "selected": BOOL,
+            "capabilities": ref("Capabilities"),
+            "health": ref("ProviderHealth"),
+        },
+        ("health",),
+    ),
+    "ProfilesResponse": obj(
+        {"selected_profile": STRING, "profiles": array(ref("ReasoningProfile"))}
+    ),
+    "SelectionRequest": obj({"profile_id": STRING}),
+    "ToolDefinition": obj({"name": STRING, "description": STRING, "input_schema": JSON_OBJECT}),
+    "ToolRequest": obj({"id": STRING, "name": STRING, "arguments": JSON_OBJECT}),
+    "ToolResult": obj({"request_id": STRING, "name": STRING, "output": {}, "is_error": BOOL}),
+    "ToolResultsRequest": obj({"results": array(ref("ToolResult"))}),
+    "SessionRequest": obj(
+        {
+            "prompt": STRING,
+            "instructions": STRING,
+            "profile_id": STRING,
+            "task_code": STRING,
+            "private_processing": BOOL,
+            "allow_external_processing": BOOL,
+            "tools": array(ref("ToolDefinition")),
+            "output_schema": JSON_OBJECT,
+        },
+        (
+            "instructions",
+            "profile_id",
+            "task_code",
+            "private_processing",
+            "allow_external_processing",
+            "tools",
+            "output_schema",
+        ),
+    ),
+    "InputRequest": obj({"prompt": STRING}),
+    "SessionResponse": obj(
+        {
+            "id": STRING,
+            "profile_id": STRING,
+            "provider_id": STRING,
+            "adapter": STRING,
+            "requested_model": STRING,
+            "created_at": STRING,
+            "updated_at": STRING,
+            "finished_at": NULLABLE_STRING,
+            "processing": PROCESSING,
+            "task_code": NULLABLE_STRING,
+            "status": {
+                "type": "string",
+                "enum": [
+                    "created",
+                    "running",
+                    "waiting_for_tool",
+                    "completed",
+                    "failed",
+                    "canceled",
+                ],
+            },
+            "pending_tools": array(ref("ToolRequest")),
+            "tool_rounds": INTEGER,
+            "final_text": NULLABLE_STRING,
+            "failure": {"anyOf": [ref("ErrorDetail"), {"type": "null"}]},
+            "effective_model": NULLABLE_STRING,
+            "effective_upstream": NULLABLE_STRING,
+            "usage": USAGE,
+            "limits": ref("ReasoningLimits"),
+            "validation": {
+                "type": "string",
+                "enum": ["pending", "passed", "failed", "not_validated"],
+            },
+            "event_count": INTEGER,
+        }
+    ),
+    "SessionEvent": obj(
+        {"sequence": INTEGER, "type": STRING, "occurred_at": STRING, "payload": JSON_OBJECT}
+    ),
+    "EventsResponse": obj({"events": array(ref("SessionEvent"))}),
+    "EmbeddingLimits": obj(
+        {
+            name: INTEGER
+            for name in [
+                "batch_size",
+                "max_input_chars",
+                "max_batch_chars",
+                "timeout_seconds",
+                "max_response_bytes",
+            ]
+        }
+    ),
+    "ReasoningLimits": obj(
+        {
+            name: INTEGER
+            for name in [
+                "timeout_seconds",
+                "max_input_chars",
+                "max_output_chars",
+                "max_output_tokens",
+                "max_tool_rounds",
+            ]
+        }
+    ),
+    "EmbeddingProfile": obj(
+        {
+            "id": STRING,
+            "provider_id": STRING,
+            "driver": STRING,
+            "model": STRING,
+            "dimensions": INTEGER,
+            "processing": PROCESSING,
+            "profile_fingerprint": STRING,
+            "document_prefix": STRING,
+            "query_prefix": STRING,
+            "revision": STRING,
+            "normalization": STRING,
+            "distance_metric": STRING,
+            "limits": ref("EmbeddingLimits"),
+            "allow_private_processing": BOOL,
+            "capabilities": obj({"text_embeddings": BOOL, "batching": BOOL, "streaming": BOOL}),
+        }
+    ),
+    "EmbeddingProfilesResponse": obj({"profiles": array(ref("EmbeddingProfile"))}),
+    "EmbeddingRequest": obj(
+        {
+            "profile_id": STRING,
+            "inputs": array(STRING),
+            "purpose": {"type": "string", "enum": ["document", "query"]},
+            "expected_fingerprint": STRING,
+            "allow_external_processing": BOOL,
+            "private_processing": BOOL,
+        },
+        ("expected_fingerprint", "allow_external_processing", "private_processing"),
+    ),
+    "EmbeddingResponse": obj(
+        {
+            "profile_id": STRING,
+            "provider_id": STRING,
+            "adapter": STRING,
+            "profile_fingerprint": STRING,
+            "purpose": {"type": "string", "enum": ["document", "query"]},
+            "requested_model": STRING,
+            "effective_model": NULLABLE_STRING,
+            "effective_upstream": NULLABLE_STRING,
+            "processing": PROCESSING,
+            "dimensions": INTEGER,
+            "vectors": array(array(NUMBER)),
+            "started_at": STRING,
+            "finished_at": STRING,
+            "usage": USAGE,
+            "validation": {"type": "string", "const": "passed"},
+        }
+    ),
+}
+
+# operation id, method, path, request, response. This is also the client generation manifest.
+OPERATIONS = (
+    ("health", "get", "/v1/health", None, "HealthResponse"),
+    ("profiles", "get", "/v1/profiles", None, "ProfilesResponse"),
+    ("selectProfile", "post", "/v1/selection", "SelectionRequest", "ProfilesResponse"),
+    ("createSession", "post", "/v1/sessions", "SessionRequest", "SessionResponse"),
+    ("session", "get", "/v1/sessions/{session_id}", None, "SessionResponse"),
+    ("events", "get", "/v1/sessions/{session_id}/events", None, "EventsResponse"),
+    (
+        "continueSession",
+        "post",
+        "/v1/sessions/{session_id}/input",
+        "InputRequest",
+        "SessionResponse",
+    ),
+    (
+        "submitToolResults",
+        "post",
+        "/v1/sessions/{session_id}/tool-results",
+        "ToolResultsRequest",
+        "SessionResponse",
+    ),
+    ("cancelSession", "post", "/v1/sessions/{session_id}/cancel", None, "SessionResponse"),
+    ("embeddingProfiles", "get", "/v1/embedding-profiles", None, "EmbeddingProfilesResponse"),
+    ("embed", "post", "/v1/embeddings", "EmbeddingRequest", "EmbeddingResponse"),
+)
+
+
+def openapi() -> dict[str, Any]:
+    paths: dict[str, Any] = {}
+    for name, method, path, request, response in OPERATIONS:
+        operation: dict[str, Any] = {
+            "operationId": name,
+            "responses": {
+                "200": {
+                    "description": "Success",
+                    "content": {"application/json": {"schema": ref(response)}},
+                },
+                "default": {
+                    "description": "Bounded failure",
+                    "content": {"application/json": {"schema": ref("ErrorResponse")}},
+                },
+            },
+        }
+        parameters = []
+        if "{session_id}" in path:
+            parameters.append(
+                {"name": "session_id", "in": "path", "required": True, "schema": STRING}
+            )
+        if name == "profiles":
+            parameters.append({"name": "health", "in": "query", "schema": BOOL})
+        if name == "events":
+            parameters.append(
+                {"name": "after", "in": "query", "schema": {"type": "integer", "minimum": 0}}
+            )
+            operation["responses"]["200"]["content"]["text/event-stream"] = {"schema": STRING}
+        if parameters:
+            operation["parameters"] = parameters
+        if request:
+            operation["requestBody"] = {
+                "required": True,
+                "content": {"application/json": {"schema": ref(request)}},
+            }
+        paths.setdefault(path, {})[method] = operation
+    return {
+        "openapi": "3.1.0",
+        "info": {"title": "Local Agent Runtime", "version": API_VERSION},
+        "servers": [{"url": "http://127.0.0.1:8765"}],
+        "security": [{"bearerAuth": []}],
+        "paths": paths,
+        "components": {
+            "schemas": SCHEMAS,
+            "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer"}},
+        },
+    }

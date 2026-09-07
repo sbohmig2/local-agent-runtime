@@ -1,0 +1,78 @@
+version: 1
+
+providers:
+  codex:
+    driver: codex_cli
+    command: codex
+  claude:
+    driver: claude_cli
+    command: claude
+  grok:
+    driver: grok_cli
+    command: grok
+  lm-studio:
+    driver: lmstudio
+    endpoint: http://127.0.0.1:1234/v1
+  openrouter:
+    driver: openrouter
+    endpoint: https://openrouter.ai/api/v1
+    credential_ref: env://OPENROUTER_API_KEY
+    upstream: replace-with-exact-openrouter-provider-slug
+
+profiles:
+  codex-default:
+    provider: codex
+    model: default
+    allow_external_processing: true
+    allow_private_processing: false
+    qualified_tasks: []
+  claude-default:
+    provider: claude
+    model: default
+    allow_external_processing: true
+    allow_private_processing: false
+    qualified_tasks: []
+  grok-default:
+    provider: grok
+    model: default
+    allow_external_processing: true
+    allow_private_processing: false
+    qualified_tasks: []
+  lm-studio-local:
+    provider: lm-studio
+    model: replace-with-the-model-identifier-shown-by-lm-studio
+    allow_external_processing: false
+    allow_private_processing: true
+    qualified_tasks: []
+    limits:
+      timeout_seconds: 600
+      max_output_tokens: 16384
+  openrouter-selected:
+    provider: openrouter
+    model: replace-with-an-openrouter-model-identifier
+    allow_external_processing: true
+    allow_private_processing: false
+    qualified_tasks: []
+
+default_profile: codex-default
+
+task_routes: {}
+
+# Replace model IDs/dimensions with the exact embedding model you configure.
+# The chat-model selection does not change these independently pinned profiles.
+embedding_profiles:
+  lm-studio-embeddings:
+    provider: lm-studio
+    model: replace-with-loaded-embedding-model-id
+    dimensions: 768
+    document_prefix: ""
+    query_prefix: ""
+    revision: "1"
+    allow_private_processing: true
+  openrouter-embeddings:
+    provider: openrouter
+    model: replace-with-openrouter-embedding-model-id
+    dimensions: 1536
+    revision: "1"
+    allow_external_processing: true
+    allow_private_processing: false

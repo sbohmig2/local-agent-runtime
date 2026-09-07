@@ -1,0 +1,1292 @@
+{
+  "components": {
+    "schemas": {
+      "Capabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_continuation": {
+            "type": "boolean"
+          },
+          "model_discovery": {
+            "type": "boolean"
+          },
+          "structured_output": {
+            "type": "boolean"
+          },
+          "text_generation": {
+            "type": "boolean"
+          },
+          "token_limit_control": {
+            "type": "boolean"
+          },
+          "token_streaming": {
+            "type": "boolean"
+          },
+          "tool_requests": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text_generation",
+          "structured_output",
+          "tool_requests",
+          "token_streaming",
+          "conversation_continuation",
+          "model_discovery",
+          "token_limit_control"
+        ],
+        "type": "object"
+      },
+      "EmbeddingLimits": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_size": {
+            "type": "integer"
+          },
+          "max_batch_chars": {
+            "type": "integer"
+          },
+          "max_input_chars": {
+            "type": "integer"
+          },
+          "max_response_bytes": {
+            "type": "integer"
+          },
+          "timeout_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "batch_size",
+          "max_input_chars",
+          "max_batch_chars",
+          "timeout_seconds",
+          "max_response_bytes"
+        ],
+        "type": "object"
+      },
+      "EmbeddingProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_private_processing": {
+            "type": "boolean"
+          },
+          "capabilities": {
+            "additionalProperties": false,
+            "properties": {
+              "batching": {
+                "type": "boolean"
+              },
+              "streaming": {
+                "type": "boolean"
+              },
+              "text_embeddings": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "text_embeddings",
+              "batching",
+              "streaming"
+            ],
+            "type": "object"
+          },
+          "dimensions": {
+            "type": "integer"
+          },
+          "distance_metric": {
+            "type": "string"
+          },
+          "document_prefix": {
+            "type": "string"
+          },
+          "driver": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/EmbeddingLimits"
+          },
+          "model": {
+            "type": "string"
+          },
+          "normalization": {
+            "type": "string"
+          },
+          "processing": {
+            "enum": [
+              "local",
+              "external"
+            ],
+            "type": "string"
+          },
+          "profile_fingerprint": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "query_prefix": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider_id",
+          "driver",
+          "model",
+          "dimensions",
+          "processing",
+          "profile_fingerprint",
+          "document_prefix",
+          "query_prefix",
+          "revision",
+          "normalization",
+          "distance_metric",
+          "limits",
+          "allow_private_processing",
+          "capabilities"
+        ],
+        "type": "object"
+      },
+      "EmbeddingProfilesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/EmbeddingProfile"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "profiles"
+        ],
+        "type": "object"
+      },
+      "EmbeddingRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_external_processing": {
+            "type": "boolean"
+          },
+          "expected_fingerprint": {
+            "type": "string"
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "private_processing": {
+            "type": "boolean"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "document",
+              "query"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "inputs",
+          "purpose"
+        ],
+        "type": "object"
+      },
+      "EmbeddingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter": {
+            "type": "string"
+          },
+          "dimensions": {
+            "type": "integer"
+          },
+          "effective_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_upstream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": "string"
+          },
+          "processing": {
+            "enum": [
+              "local",
+              "external"
+            ],
+            "type": "string"
+          },
+          "profile_fingerprint": {
+            "type": "string"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "document",
+              "query"
+            ],
+            "type": "string"
+          },
+          "requested_model": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "validation": {
+            "const": "passed",
+            "type": "string"
+          },
+          "vectors": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "profile_id",
+          "provider_id",
+          "adapter",
+          "profile_fingerprint",
+          "purpose",
+          "requested_model",
+          "effective_model",
+          "effective_upstream",
+          "processing",
+          "dimensions",
+          "vectors",
+          "started_at",
+          "finished_at",
+          "usage",
+          "validation"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "EventsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/SessionEvent"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "type": "object"
+      },
+      "HealthResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "type": "string"
+          },
+          "package_version": {
+            "type": "string"
+          },
+          "status": {
+            "const": "available",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "package_version",
+          "api_version"
+        ],
+        "type": "object"
+      },
+      "InputRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "ProfilesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ReasoningProfile"
+            },
+            "type": "array"
+          },
+          "selected_profile": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selected_profile",
+          "profiles"
+        ],
+        "type": "object"
+      },
+      "ProviderHealth": {
+        "additionalProperties": false,
+        "properties": {
+          "authenticated": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "compatible": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "detail_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "installed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "available",
+              "unavailable",
+              "inconclusive"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "authenticated",
+          "installed",
+          "compatible",
+          "detail_code",
+          "effective_model"
+        ],
+        "type": "object"
+      },
+      "ReasoningLimits": {
+        "additionalProperties": false,
+        "properties": {
+          "max_input_chars": {
+            "type": "integer"
+          },
+          "max_output_chars": {
+            "type": "integer"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "max_tool_rounds": {
+            "type": "integer"
+          },
+          "timeout_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeout_seconds",
+          "max_input_chars",
+          "max_output_chars",
+          "max_output_tokens",
+          "max_tool_rounds"
+        ],
+        "type": "object"
+      },
+      "ReasoningProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_private_processing": {
+            "type": "boolean"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "driver": {
+            "type": "string"
+          },
+          "health": {
+            "$ref": "#/components/schemas/ProviderHealth"
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "processing": {
+            "enum": [
+              "local",
+              "external"
+            ],
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "qualification": {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "enum": [
+                  "qualified",
+                  "unqualified"
+                ],
+                "type": "string"
+              },
+              "tasks": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "status",
+              "tasks"
+            ],
+            "type": "object"
+          },
+          "qualified_tasks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "selected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "provider_id",
+          "driver",
+          "model",
+          "configured",
+          "processing",
+          "allow_private_processing",
+          "qualified_tasks",
+          "qualification",
+          "selected",
+          "capabilities"
+        ],
+        "type": "object"
+      },
+      "SelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id"
+        ],
+        "type": "object"
+      },
+      "SessionEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "occurred_at": {
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "sequence": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sequence",
+          "type",
+          "occurred_at",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "SessionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_external_processing": {
+            "type": "boolean"
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "output_schema": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "private_processing": {
+            "type": "boolean"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "task_code": {
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolDefinition"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "SessionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "effective_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_upstream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event_count": {
+            "type": "integer"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "final_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ReasoningLimits"
+          },
+          "pending_tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolRequest"
+            },
+            "type": "array"
+          },
+          "processing": {
+            "enum": [
+              "local",
+              "external"
+            ],
+            "type": "string"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "requested_model": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "created",
+              "running",
+              "waiting_for_tool",
+              "completed",
+              "failed",
+              "canceled"
+            ],
+            "type": "string"
+          },
+          "task_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_rounds": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "validation": {
+            "enum": [
+              "pending",
+              "passed",
+              "failed",
+              "not_validated"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "profile_id",
+          "provider_id",
+          "adapter",
+          "requested_model",
+          "created_at",
+          "updated_at",
+          "finished_at",
+          "processing",
+          "task_code",
+          "status",
+          "pending_tools",
+          "tool_rounds",
+          "final_text",
+          "failure",
+          "effective_model",
+          "effective_upstream",
+          "usage",
+          "limits",
+          "validation",
+          "event_count"
+        ],
+        "type": "object"
+      },
+      "ToolDefinition": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "input_schema": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "input_schema"
+        ],
+        "type": "object"
+      },
+      "ToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "ToolResult": {
+        "additionalProperties": false,
+        "properties": {
+          "is_error": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "output": {},
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "name",
+          "output",
+          "is_error"
+        ],
+        "type": "object"
+      },
+      "ToolResultsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ToolResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Local Agent Runtime",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/embedding-profiles": {
+      "get": {
+        "operationId": "embeddingProfiles",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbeddingProfilesResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/embeddings": {
+      "post": {
+        "operationId": "embed",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbeddingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbeddingResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/profiles": {
+      "get": {
+        "operationId": "profiles",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "health",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilesResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/selection": {
+      "post": {
+        "operationId": "selectProfile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilesResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/sessions": {
+      "post": {
+        "operationId": "createSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}": {
+      "get": {
+        "operationId": "session",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/cancel": {
+      "post": {
+        "operationId": "cancelSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/events": {
+      "get": {
+        "operationId": "events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/input": {
+      "post": {
+        "operationId": "continueSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/tool-results": {
+      "post": {
+        "operationId": "submitToolResults",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolResultsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8765"
+    }
+  ]
+}

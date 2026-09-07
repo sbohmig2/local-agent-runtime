@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-groups
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm --prefix clients/typescript ci --ignore-scripts
+      - run: uv run python scripts/check.py
