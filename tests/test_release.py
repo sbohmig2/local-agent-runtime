@@ -18,6 +18,7 @@ from scripts.build_release import (
     finalize_manifest,
     inspect_archive,
     inspect_license_files,
+    inspect_python_typing_marker,
     inspect_sdist_members,
     release_version,
     require_clean,
@@ -26,7 +27,7 @@ from scripts.build_release import (
     write_manifest,
 )
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 COMMIT = "1" * 40
 
 
@@ -176,7 +177,7 @@ def test_release_version_rejects_mismatch(tmp_path: Path, monkeypatch: pytest.Mo
     source.mkdir(parents=True)
     contracts.mkdir()
     (tmp_path / "pyproject.toml").write_text(f'[project]\nversion = "{VERSION}"\n')
-    (client / "package.json").write_text(json.dumps({"version": "0.1.1"}))
+    (client / "package.json").write_text(json.dumps({"version": "0.1.2"}))
     (client / "package-lock.json").write_text(json.dumps({"version": "0.1.0"}))
     (source / "version.py").write_text('PACKAGE_VERSION = "0.1.0"\n')
     (contracts / "openapi.json").write_text(json.dumps({"info": {"version": "1.0.0"}}))
@@ -262,6 +263,23 @@ def test_release_artifacts_must_carry_exact_repository_license(
         archive.writestr(f"local_agent_runtime-{VERSION}.dist-info/licenses/LICENSE", b"wrong\n")
     with pytest.raises(ReleaseError, match="does not match"):
         inspect_license_files([wheel], VERSION)
+
+
+def test_python_wheel_must_declare_its_inline_types(tmp_path: Path) -> None:
+    wheel = tmp_path / f"local_agent_runtime-{VERSION}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("local_agent_runtime/__init__.py", "")
+    with pytest.raises(ReleaseError, match="missing its PEP 561"):
+        inspect_python_typing_marker(wheel)
+
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("local_agent_runtime/py.typed", "partial\n")
+    with pytest.raises(ReleaseError, match="must be empty"):
+        inspect_python_typing_marker(wheel)
+
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("local_agent_runtime/py.typed", "")
+    inspect_python_typing_marker(wheel)
 
 
 def test_source_commit_requires_full_hash(monkeypatch: pytest.MonkeyPatch) -> None:

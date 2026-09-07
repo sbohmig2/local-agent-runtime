@@ -39,5 +39,6 @@ tools, approvals, or user interface.
 
 ## Tasks
 
+- LAR-003 — in progress — [Publish the typed Python distribution](../../tasks/LAR-003-publish-typed-python-distribution.md)
 - LAR-002 — done — [Release initial consumer artifacts](../../tasks/done/LAR-002-release-initial-consumer-artifacts.md)
 - LAR-001 — done — [Establish the provider-neutral local agent runtime](../../tasks/done/LAR-001-establish-provider-neutral-local-agent-runtime.md)

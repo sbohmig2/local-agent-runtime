@@ -175,6 +175,16 @@ def inspect_license_files(paths: Iterable[Path], version: str) -> None:
             raise ReleaseError(f"Artifact license does not match repository license: {path.name}")
 
 
+def inspect_python_typing_marker(wheel: Path) -> None:
+    with zipfile.ZipFile(wheel) as archive:
+        try:
+            content = archive.read("local_agent_runtime/py.typed")
+        except KeyError as exc:
+            raise ReleaseError("Python wheel is missing its PEP 561 py.typed marker") from exc
+    if content.strip():
+        raise ReleaseError("Python wheel py.typed marker must be empty for a fully typed package")
+
+
 def inspect_archive(path: Path) -> None:
     if path.suffix == ".whl":
         with zipfile.ZipFile(path) as archive:
@@ -277,6 +287,7 @@ def check_sdist(sdist: Path) -> None:
         wheels = list(directory.glob("local_agent_runtime-*-py3-none-any.whl"))
         if len(wheels) != 1:
             raise ReleaseError("The source distribution did not rebuild one wheel")
+        inspect_python_typing_marker(wheels[0])
     print("Isolated source distribution rebuild passed.")
 
 
@@ -343,6 +354,7 @@ def build(*, allow_dirty: bool) -> None:
     wheel = DIST / f"local_agent_runtime-{version}-py3-none-any.whl"
     sdist = DIST / f"local_agent_runtime-{version}.tar.gz"
     tarball = DIST / f"local-agent-runtime-client-{version}.tgz"
+    inspect_python_typing_marker(wheel)
     run(["uv", "run", "python", "scripts/check_install.py", "--wheel", str(wheel)])
     check_sdist(sdist)
     check_typescript_tarball(tarball)

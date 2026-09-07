@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import tempfile
+from importlib.metadata import version
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +52,7 @@ try:
                 assert response.status == 200
                 assert json.load(response) == {
                     "status": "available",
-                    "package_version": "0.1.1",
+                    "package_version": "0.1.2",
                     "api_version": "1.0.0",
                 }
                 print("Isolated wheel imports and authenticated gateway startup passed.")
@@ -101,6 +102,31 @@ def main() -> int:
             check=True,
             timeout=60,
         )
+        consumer = Path(directory) / "typed_consumer.py"
+        consumer.write_text(
+            "from local_agent_runtime import RuntimeService\n"
+            "service: type[RuntimeService] = RuntimeService\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [
+                "uv",
+                "run",
+                "--isolated",
+                "--no-project",
+                "--with",
+                str(wheel),
+                "--with",
+                f"mypy=={version('mypy')}",
+                "mypy",
+                "--strict",
+                str(consumer),
+            ],
+            cwd=directory,
+            check=True,
+            timeout=60,
+        )
+        print("Strict external mypy consumer passed.")
     return 0
 
 

@@ -5,7 +5,10 @@ truth.
 
 ## Active lane
 
-No task is active.
+- [LAR-003 - Publish the typed Python distribution](./LAR-003-publish-typed-python-distribution.md)
+  — publish the typed Python distribution correction. Consumer
+  integration exposed a missing PEP 561 marker in `v0.1.1`; implementation and
+  public patch release are in progress.
 
 ## Queued lane
 

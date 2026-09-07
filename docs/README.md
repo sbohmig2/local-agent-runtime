@@ -23,8 +23,9 @@ Consumer installation and process boundaries are described in
 ## Current stage
 
 The repository baseline, first implementation, and immutable public
-MIT-licensed `v0.1.1` consumer release are complete. Deterministic behavior,
-anonymous installation, and independent review have passed; live-provider
-qualification remains distinct work. See the completed
-[LAR-001](./tasks/done/LAR-001-establish-provider-neutral-local-agent-runtime.md)
-and [LAR-002](./tasks/done/LAR-002-release-initial-consumer-artifacts.md) tasks.
+MIT-licensed `v0.1.1` consumer release are complete. A `v0.1.2` typed-package
+correction is in progress under LAR-003. Live-provider qualification remains
+distinct work. See the completed
+[LAR-001](./tasks/done/LAR-001-establish-provider-neutral-local-agent-runtime.md),
+[LAR-002](./tasks/done/LAR-002-release-initial-consumer-artifacts.md), and the
+active typed-distribution correction.

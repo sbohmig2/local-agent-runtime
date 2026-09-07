@@ -9,12 +9,12 @@ test("client preserves separate system instructions and compatibility health", a
     fetch: async (url, init) => {
       requests.push({url, init});
       if (url.endsWith("/v1/health")) {
-        return Response.json({status: "available", package_version: "0.1.1", api_version: "1.0.0"});
+        return Response.json({status: "available", package_version: "0.1.2", api_version: "1.0.0"});
       }
       return Response.json({id: "session"});
     }});
   assert.deepEqual(await client.health(),
-    {status: "available", package_version: "0.1.1", api_version: "1.0.0"});
+    {status: "available", package_version: "0.1.2", api_version: "1.0.0"});
   await client.createSession({prompt: "question", instructions: "trusted product policy"});
   assert.deepEqual(JSON.parse(requests[1].init.body),
     {prompt: "question", instructions: "trusted product policy"});
