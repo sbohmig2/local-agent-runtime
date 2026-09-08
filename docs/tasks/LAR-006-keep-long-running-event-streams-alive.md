@@ -38,6 +38,14 @@ runtime's own 600-second provider bound. The failure was reported safely as
 
 ## Progress notes
 
+- 2026-09-08: Published immutable GitHub release `v0.2.1` from source commit
+  `10c477cf0d141146515724851f34e4f647917060` after the full gate and GitHub CI
+  passed. Anonymous downloads matched `SHA256SUMS`: TypeScript client
+  `a4b4decbc06dda85c7c1ee0a8ab6234d59c5870196238b7cc38a767750760ad9`,
+  Python wheel `30c719f80340dd0f2832d76afcd95f6b5fd1477ae660e48e804503daca5ac609`,
+  and source distribution
+  `62b1202817ece047ed623da8a2db7e69c44be87aeea9f5a2258886c2a3239296`.
+  The task remains in review for the owner-requested follow-up review.
 - 2026-09-08: Implemented 15-second SSE comment heartbeats using a monotonic
   idle clock. Focused Python and TypeScript tests pass; no client parser change
   was required. Broader independent review is deferred to the owner's follow-up
