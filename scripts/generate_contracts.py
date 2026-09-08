@@ -62,14 +62,23 @@ def client() -> str:
             args.append("body: " + request)
         if name == "profiles":
             args.append("includeHealth = false")
+        if name == "adapters":
+            args.append("probe = false")
         if name == "events":
             args.append("after = 0")
         args.append("signal?: AbortSignal")
+        if name == "profiles":
+            # Appended after `signal` so `profiles(true, controller.signal)` keeps working.
+            args.append("includeDiscovery = false")
         url = json.dumps(path).replace("{session_id}", '" + encodeURIComponent(sessionId) + "')
         if name == "profiles":
-            url += ' + "?health=" + String(includeHealth)'
+            url += (
+                ' + "?health=" + String(includeHealth) + "&discovery=" + String(includeDiscovery)'
+            )
         if name == "events":
             url += ' + "?after=" + String(after)'
+        if name == "adapters":
+            url += ' + "?probe=" + String(probe)'
         lines.extend(
             [
                 "  " + name + "(" + ", ".join(args) + "): Promise<" + response + "> {",

@@ -155,10 +155,17 @@ def create_app(
 
     async def profiles(request: Request) -> Response:
         health_value = request.query_params.get("health", "false")
-        if health_value not in {"true", "false"}:
-            return _error(400, "invalid_request", "The health query is invalid")
+        discovery_value = request.query_params.get("discovery", "false")
+        if health_value not in {"true", "false"} or discovery_value not in {"true", "false"}:
+            return _error(400, "invalid_request", "The profile catalog query is invalid")
         include_health = health_value == "true"
-        return await invoke(request, lambda: service.profile_state(include_health=include_health))
+        include_discovery = discovery_value == "true"
+        return await invoke(
+            request,
+            lambda: service.profile_state(
+                include_health=include_health, include_discovery=include_discovery
+            ),
+        )
 
     async def select_profile(request: Request) -> Response:
         async def operation() -> dict[str, Any]:
@@ -166,6 +173,28 @@ def create_app(
             if set(body) != {"profile_id"}:
                 raise invalid_request("The profile selection request is invalid")
             return await service.select_profile(body["profile_id"])
+
+        return await invoke(request, operation)
+
+    async def adapters(request: Request) -> Response:
+        async def operation() -> dict[str, Any]:
+            values = request.query_params.getlist("probe")
+            if (
+                set(request.query_params) - {"probe"}
+                or len(values) > 1
+                or (values and values[0] not in {"true", "false"})
+            ):
+                raise invalid_request("The adapter catalog query is invalid")
+            return await service.adapter_state(probe=values == ["true"])
+
+        return await invoke(request, operation)
+
+    async def adapter_activation(request: Request) -> Response:
+        async def operation() -> dict[str, Any]:
+            body = await _json_body(request)
+            if request.query_params or set(body) != {"option_id", "enabled"}:
+                raise invalid_request("The adapter activation request is invalid")
+            return await service.set_adapter_activation(body["option_id"], body["enabled"])
 
         return await invoke(request, operation)
 
@@ -181,6 +210,7 @@ def create_app(
                 "tools",
                 "allow_external_processing",
                 "output_schema",
+                "reasoning_effort",
             }
             if set(body) - allowed or "prompt" not in body:
                 raise invalid_request("The session request is invalid")
@@ -203,6 +233,7 @@ def create_app(
                 private_processing=private,
                 allow_external_processing=external,
                 output_schema=body.get("output_schema"),
+                reasoning_effort=body.get("reasoning_effort"),
             )
 
         return await invoke(request, operation)
@@ -216,9 +247,13 @@ def create_app(
     async def session_input(request: Request) -> Response:
         async def operation() -> dict[str, Any]:
             body = await _json_body(request)
-            if set(body) != {"prompt"}:
+            if not {"prompt"} <= set(body) or set(body) - {"prompt", "reasoning_effort"}:
                 raise invalid_request("The session input request is invalid")
-            return await service.continue_session(request.path_params["session_id"], body["prompt"])
+            return await service.continue_session(
+                request.path_params["session_id"],
+                body["prompt"],
+                body.get("reasoning_effort"),
+            )
 
         return await invoke(request, operation)
 
@@ -323,6 +358,8 @@ def create_app(
             Route("/v1/embeddings", embed, methods=["POST"]),
             Route("/v1/health", health, methods=["GET"]),
             Route("/v1/profiles", profiles, methods=["GET"]),
+            Route("/v1/adapters", adapters, methods=["GET"]),
+            Route("/v1/adapter-activation", adapter_activation, methods=["POST"]),
             Route("/v1/selection", select_profile, methods=["POST"]),
             Route("/v1/sessions", create_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}", get_session, methods=["GET"]),

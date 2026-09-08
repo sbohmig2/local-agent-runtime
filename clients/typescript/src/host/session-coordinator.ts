@@ -3,16 +3,19 @@ import { randomUUID } from "node:crypto";
 import type { SessionEvent, SessionResponse, ToolRequest, ToolResult } from "../generated.js";
 
 import type {
+  ContinueSessionOptions,
   HostEvent,
   HostSession,
   ProcessingAuthorizer,
   PublicProfile,
+  PublicAdapterCatalog,
+  ReasoningEffort,
   RuntimePort,
   StartSessionRequest,
   ToolAuthorizer,
   ToolCatalog
 } from "./contracts.js";
-import { toPublicProfile } from "./contracts.js";
+import { toPublicAdapterCatalog, toPublicProfile } from "./contracts.js";
 import { HostError, safeError } from "./errors.js";
 
 const MAX_PROMPT_CHARS = 140_000;
@@ -124,6 +127,19 @@ export interface SessionCoordinatorOptions {
   nowMillis?: () => number;
 }
 
+function requestedEffort(
+  effort: ReasoningEffort | undefined,
+  profile: PublicProfile
+): ReasoningEffort | undefined {
+  if (effort === undefined) return undefined;
+  // Refuse before the runtime is asked, so an unsupported effort is never
+  // accepted and quietly dropped by a provider.
+  if (!profile.reasoning.efforts.includes(effort)) {
+    throw new HostError("reasoning_effort_unsupported", 400);
+  }
+  return effort;
+}
+
 function toolRequests(value: unknown): ToolRequest[] {
   if (!Array.isArray(value)) throw new HostError("invalid_runtime_response", 503);
   const result: ToolRequest[] = [];
@@ -223,15 +239,31 @@ export class SessionCoordinator {
     };
   }
 
-  async profiles(includeHealth = false): Promise<{
+  async profiles(
+    includeHealth = false,
+    includeDiscovery = false
+  ): Promise<{
     selectedProfile: string;
     profiles: PublicProfile[];
   }> {
-    const state = await this.runtime.profiles(includeHealth);
+    const state = await this.runtime.profiles(includeHealth, undefined, includeDiscovery);
     return {
       selectedProfile: state.selected_profile,
       profiles: state.profiles.map(toPublicProfile)
     };
+  }
+
+  async adapters(probe = false): Promise<PublicAdapterCatalog> {
+    if (this.runtime.adapters === undefined) throw new HostError("catalog_unavailable", 503);
+    return toPublicAdapterCatalog(await this.runtime.adapters(probe));
+  }
+
+  async setAdapterActivation(optionId: string, enabled: boolean): Promise<PublicAdapterCatalog> {
+    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(optionId) || typeof enabled !== "boolean") {
+      throw new HostError("invalid_request", 400);
+    }
+    if (this.runtime.setAdapterActivation === undefined) throw new HostError("activation_unavailable", 503);
+    return toPublicAdapterCatalog(await this.runtime.setAdapterActivation({ option_id: optionId, enabled }));
   }
 
   async selectProfile(profileId: string): Promise<{
@@ -271,6 +303,7 @@ export class SessionCoordinator {
       const rawProfile = profileState.profiles.find((item) => item.id === profileId);
       if (rawProfile === undefined) throw new HostError("profile_unavailable", 409);
       const profile = toPublicProfile(rawProfile);
+      const effort = requestedEffort(request.reasoningEffort, profile);
       const processingRequest = { ...request, profileId };
       const processing = await this.authorizeProcessing(
         Object.freeze({ ...processingRequest }),
@@ -287,6 +320,7 @@ export class SessionCoordinator {
         private_processing: request.privateProcessing ?? false,
         allow_external_processing: request.allowExternalProcessing ?? false,
         ...(request.outputSchema === undefined ? {} : { output_schema: request.outputSchema }),
+        ...(effort === undefined ? {} : { reasoning_effort: effort }),
         tools: tools.map((tool) => ({
           name: tool.name,
           description: tool.description,
@@ -320,7 +354,11 @@ export class SessionCoordinator {
     }
   }
 
-  async continue(sessionId: string, prompt: string): Promise<HostSession> {
+  async continue(
+    sessionId: string,
+    prompt: string,
+    options: ContinueSessionOptions = {}
+  ): Promise<HostSession> {
     const record = this.record(sessionId);
     if (
       typeof prompt !== "string" ||
@@ -333,13 +371,24 @@ export class SessionCoordinator {
     }
     record.continuing = true;
     try {
-      const processingRequest = { ...record.processingRequest, prompt };
+      const effort = requestedEffort(
+        options.reasoningEffort ?? record.public.requestedReasoningEffort ?? undefined,
+        record.profile
+      );
+      const processingRequest: StartSessionRequest = {
+        ...record.processingRequest,
+        prompt,
+        reasoningEffort: effort
+      };
       const processing = await this.authorizeProcessing(
         Object.freeze({ ...processingRequest }),
         Object.freeze({ ...record.profile })
       );
       if (processing !== "allow") throw new HostError("processing_not_allowed", 403);
-      const state = await this.runtime.continueSession(record.runtimeId, { prompt });
+      const state = await this.runtime.continueSession(record.runtimeId, {
+        prompt,
+        ...(effort === undefined ? {} : { reasoning_effort: effort })
+      });
       record.processingRequest = processingRequest;
       record.controller = new AbortController();
       record.timedOut = false;
@@ -551,6 +600,7 @@ export class SessionCoordinator {
   private syncSession(record: SessionRecord, state: SessionResponse): void {
     record.public.effectiveModel = state.effective_model;
     record.public.effectiveUpstream = state.effective_upstream;
+    record.public.effectiveReasoningEffort = state.effective_reasoning_effort;
     record.public.finalText = state.final_text;
   }
 
@@ -567,6 +617,8 @@ export class SessionCoordinator {
       effectiveModel: state.effective_model,
       effectiveUpstream: state.effective_upstream,
       processing: state.processing,
+      requestedReasoningEffort: state.requested_reasoning_effort,
+      effectiveReasoningEffort: state.effective_reasoning_effort,
       status,
       finalText: state.final_text,
       failureCode: state.failure?.code ?? null,

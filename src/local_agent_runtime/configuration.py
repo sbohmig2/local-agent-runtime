@@ -16,6 +16,7 @@ from local_agent_runtime.contracts import (
     ModelProfile,
     ProcessingClass,
     ProviderConnection,
+    ReasoningEffort,
     RuntimeConfiguration,
 )
 from local_agent_runtime.embeddings import EmbeddingLimits, EmbeddingProfile
@@ -174,6 +175,41 @@ def _limits(value: Any) -> Limits:
     return limits
 
 
+def _reasoning_efforts(profile_id: str, value: Any) -> tuple[ReasoningEffort, ...]:
+    """Operator narrowing only. An adapter still refuses efforts it cannot deliver."""
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not value:
+        raise invalid_configuration(f"Profile {profile_id} reasoning efforts are invalid")
+    efforts: list[ReasoningEffort] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise invalid_configuration(f"Profile {profile_id} reasoning efforts are invalid")
+        try:
+            effort = ReasoningEffort(item)
+        except ValueError:
+            raise invalid_configuration(
+                f"Profile {profile_id} declares an unknown reasoning effort"
+            ) from None
+        if effort in efforts:
+            raise invalid_configuration(f"Profile {profile_id} repeats a reasoning effort")
+        efforts.append(effort)
+    return tuple(efforts)
+
+
+def _default_reasoning_effort(profile_id: str, value: Any) -> ReasoningEffort | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise invalid_configuration(f"Profile {profile_id} default reasoning effort is invalid")
+    try:
+        return ReasoningEffort(value)
+    except ValueError:
+        raise invalid_configuration(
+            f"Profile {profile_id} default reasoning effort is unknown"
+        ) from None
+
+
 def load_configuration(path: Path) -> RuntimeConfiguration:
     try:
         with path.open("rb") as handle:
@@ -194,7 +230,10 @@ def load_configuration(path: Path) -> RuntimeConfiguration:
         "default_profile",
         "task_routes",
     }
-    if not required <= set(root) or set(root) - required - {"embedding_profiles"}:
+    if not required <= set(root) or set(root) - required - {
+        "embedding_profiles",
+        "activation_policy",
+    }:
         raise invalid_configuration("Configuration fields are invalid")
     if type(root["version"]) is not int or root["version"] != 1:
         raise invalid_configuration("Unsupported configuration version")
@@ -247,6 +286,8 @@ def load_configuration(path: Path) -> RuntimeConfiguration:
             "allow_private_processing",
             "limits",
             "qualified_tasks",
+            "reasoning_efforts",
+            "default_reasoning_effort",
         }
         if set(raw) - allowed:
             raise invalid_configuration(f"Profile {profile_id} contains unsupported fields")
@@ -278,6 +319,12 @@ def load_configuration(path: Path) -> RuntimeConfiguration:
             or len(set(tasks)) != len(tasks)
         ):
             raise invalid_configuration(f"Profile {profile_id} qualified tasks are invalid")
+        efforts = _reasoning_efforts(profile_id, raw.get("reasoning_efforts"))
+        default_effort = _default_reasoning_effort(profile_id, raw.get("default_reasoning_effort"))
+        if default_effort is not None and efforts and default_effort not in efforts:
+            raise invalid_configuration(
+                f"Profile {profile_id} default reasoning effort is not declared"
+            )
         profiles[profile_id] = ModelProfile(
             id=profile_id,
             provider_id=provider_id,
@@ -286,6 +333,8 @@ def load_configuration(path: Path) -> RuntimeConfiguration:
             allow_private_processing=private,
             limits=_limits(raw.get("limits")),
             qualified_tasks=tuple(tasks),
+            reasoning_efforts=efforts,
+            default_reasoning_effort=default_effort,
         )
     if not profiles:
         raise invalid_configuration("At least one profile is required")
@@ -338,8 +387,18 @@ def load_configuration(path: Path) -> RuntimeConfiguration:
                 "Embedding profile must explicitly allow external processing"
             )
         embedding_profiles[profile_id] = profile
+    policy = _mapping(root.get("activation_policy", {}), "Activation policy")
+    if set(policy) - {"managed_profiles"}:
+        raise invalid_configuration("Activation policy fields are invalid")
+    managed = dict(_mapping(policy.get("managed_profiles", {}), "Managed profiles"))
+    if any(key not in profiles or type(value) is not bool for key, value in managed.items()):
+        raise invalid_configuration("Managed profiles must name configured profiles and booleans")
+    if managed.get(default_profile) is False:
+        raise invalid_configuration("The default profile must be enabled")
+    if any(managed.get(profile_id) is False for profile_id in task_routes.values()):
+        raise invalid_configuration("Task routes must be enabled")
     return RuntimeConfiguration(
-        providers, profiles, default_profile, task_routes, embedding_profiles
+        providers, profiles, default_profile, task_routes, embedding_profiles, managed
     )
 
 

@@ -15,11 +15,14 @@ from local_agent_runtime.contracts import (
     CompletionResult,
     HealthStatus,
     Invocation,
+    ModelDiscovery,
     ModelProfile,
     ProviderConnection,
     ProviderHealth,
+    ReasoningEffort,
 )
 from local_agent_runtime.errors import RuntimeFailure
+from local_agent_runtime.reasoning import resolve_efforts
 
 
 @dataclass
@@ -34,6 +37,14 @@ class OpenRouterAdapter:
     @property
     def capabilities(self) -> Capabilities:
         return Capabilities(token_limit_control=True)
+
+    @property
+    def reasoning_efforts(self) -> tuple[ReasoningEffort, ...]:
+        """Hosted-routing capability expansion is out of scope for this task."""
+        return resolve_efforts(self.profile, (), {})
+
+    async def discover_models(self) -> ModelDiscovery:
+        return ModelDiscovery(supported=False, detail_code="discovery_not_offered")
 
     async def health(self) -> ProviderHealth:
         try:
@@ -67,6 +78,11 @@ class OpenRouterAdapter:
             )
 
     async def complete(self, invocation: Invocation) -> CompletionResult:
+        if invocation.reasoning_effort is not None:
+            raise RuntimeFailure(
+                "reasoning_effort_unsupported",
+                "The requested reasoning effort is not supported by this profile",
+            )
         body = chat_body(self.profile, invocation)
         body["provider"] = routing(self.connection)
         payload = await request_json(

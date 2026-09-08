@@ -22,6 +22,7 @@ import time
 import urllib.request
 from pathlib import Path
 import local_agent_runtime as lar
+from local_agent_runtime.api_contract import API_VERSION
 from local_agent_runtime.providers import REASONING_PROVIDERS, EMBEDDING_PROVIDERS
 
 assert len(REASONING_PROVIDERS) == 5
@@ -52,8 +53,8 @@ try:
                 assert response.status == 200
                 assert json.load(response) == {
                     "status": "available",
-                    "package_version": "0.1.3",
-                    "api_version": "1.0.0",
+                    "package_version": lar.__version__,
+                    "api_version": API_VERSION,
                 }
                 print("Isolated wheel imports and authenticated gateway startup passed.")
                 break

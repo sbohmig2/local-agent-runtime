@@ -4,7 +4,7 @@ prefix: LAR
 status: active
 initiatives:
   - reusable-agent-runtime
-updated: 2026-09-07
+updated: 2026-09-08
 ---
 
 # Agent runtime
@@ -42,8 +42,13 @@ consumer-owned and must not be added to this package.
   tool requests, model enumeration, and session continuation may differ by
   adapter and must be reported rather than emulated dishonestly.
 - Keep provider selection and secrets out of portable consumer data.
+- Own the fixed supported-adapter inventory, explicit installation probes, and
+  private enablement of operator-approved configured options. Consumers render
+  that catalog without duplicating executable discovery or accepting credentials.
 
 ## Tasks
+
+- LAR-005 — review — [Model selection and reasoning controls](../../tasks/LAR-005-deliver-model-selection-and-reasoning-controls.md)
 
 - LAR-004 — done — [Deliver the reusable TypeScript host toolkit](../../tasks/done/LAR-004-deliver-reusable-typescript-host-toolkit.md)
 - LAR-003 — done — [Publish the typed Python distribution](../../tasks/done/LAR-003-publish-typed-python-distribution.md)

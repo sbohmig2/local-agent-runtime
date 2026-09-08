@@ -2,7 +2,7 @@
 
 from typing import Any
 
-API_VERSION = "1.0.0"
+API_VERSION = "1.1.0"
 
 
 def ref(name: str) -> dict[str, str]:
@@ -30,6 +30,11 @@ NULLABLE_STRING = {"type": ["string", "null"]}
 JSON_OBJECT = {"type": "object", "additionalProperties": {}}
 USAGE = {"type": "object", "additionalProperties": NUMBER}
 PROCESSING = {"type": "string", "enum": ["local", "external"]}
+REASONING_EFFORT = {
+    "type": "string",
+    "enum": ["minimal", "low", "medium", "high", "xhigh", "max"],
+}
+NULLABLE_REASONING_EFFORT = {"anyOf": [REASONING_EFFORT, {"type": "null"}]}
 
 SCHEMAS: dict[str, dict[str, Any]] = {
     "ErrorDetail": obj({"code": STRING, "message": STRING}),
@@ -62,9 +67,61 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 "conversation_continuation",
                 "model_discovery",
                 "token_limit_control",
+                "reasoning_effort_control",
             ]
         }
     ),
+    "ReasoningOptions": obj(
+        {"efforts": array(REASONING_EFFORT), "default": NULLABLE_REASONING_EFFORT}
+    ),
+    "ModelDiscovery": obj(
+        {
+            "supported": BOOL,
+            "models": array(STRING),
+            "detail_code": NULLABLE_STRING,
+            "loaded_models": {"anyOf": [array(STRING), {"type": "null"}]},
+        },
+        ("loaded_models",),
+    ),
+    "AdapterOption": obj(
+        {
+            "id": STRING,
+            "profile_id": STRING,
+            "model": STRING,
+            "enabled": BOOL,
+            "can_enable": BOOL,
+            "can_disable": BOOL,
+            "blocked_reason": NULLABLE_STRING,
+        }
+    ),
+    "AdapterProbe": obj(
+        {
+            "state": {"type": "string", "enum": ["not_checked", "checked", "failed"]},
+            "installed": {"type": ["boolean", "null"]},
+            "detail_code": NULLABLE_STRING,
+            "checked_at": NULLABLE_STRING,
+        }
+    ),
+    "SupportedAdapter": obj(
+        {
+            "id": {
+                "type": "string",
+                "enum": ["codex_cli", "claude_cli", "grok_cli", "lmstudio", "openrouter"],
+            },
+            "label": STRING,
+            "processing": PROCESSING,
+            "supported": {"type": "boolean", "const": True},
+            "configured": BOOL,
+            "enabled": BOOL,
+            "profile_ids": array(STRING),
+            "options": array(ref("AdapterOption")),
+            "probe": ref("AdapterProbe"),
+            "discovery": ref("ModelDiscovery"),
+        },
+        ("discovery",),
+    ),
+    "AdaptersResponse": obj({"adapters": array(ref("SupportedAdapter"))}),
+    "AdapterActivationRequest": obj({"option_id": STRING, "enabled": BOOL}),
     "ReasoningProfile": obj(
         {
             "id": STRING,
@@ -83,9 +140,11 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             ),
             "selected": BOOL,
             "capabilities": ref("Capabilities"),
+            "reasoning": ref("ReasoningOptions"),
             "health": ref("ProviderHealth"),
+            "discovery": ref("ModelDiscovery"),
         },
-        ("health",),
+        ("health", "discovery"),
     ),
     "ProfilesResponse": obj(
         {"selected_profile": STRING, "profiles": array(ref("ReasoningProfile"))}
@@ -105,6 +164,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "allow_external_processing": BOOL,
             "tools": array(ref("ToolDefinition")),
             "output_schema": JSON_OBJECT,
+            "reasoning_effort": REASONING_EFFORT,
         },
         (
             "instructions",
@@ -114,9 +174,12 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "allow_external_processing",
             "tools",
             "output_schema",
+            "reasoning_effort",
         ),
     ),
-    "InputRequest": obj({"prompt": STRING}),
+    "InputRequest": obj(
+        {"prompt": STRING, "reasoning_effort": REASONING_EFFORT}, ("reasoning_effort",)
+    ),
     "SessionResponse": obj(
         {
             "id": STRING,
@@ -146,6 +209,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "failure": {"anyOf": [ref("ErrorDetail"), {"type": "null"}]},
             "effective_model": NULLABLE_STRING,
             "effective_upstream": NULLABLE_STRING,
+            "requested_reasoning_effort": NULLABLE_REASONING_EFFORT,
+            "effective_reasoning_effort": NULLABLE_REASONING_EFFORT,
             "usage": USAGE,
             "limits": ref("ReasoningLimits"),
             "validation": {
@@ -239,6 +304,14 @@ SCHEMAS: dict[str, dict[str, Any]] = {
 OPERATIONS = (
     ("health", "get", "/v1/health", None, "HealthResponse"),
     ("profiles", "get", "/v1/profiles", None, "ProfilesResponse"),
+    ("adapters", "get", "/v1/adapters", None, "AdaptersResponse"),
+    (
+        "setAdapterActivation",
+        "post",
+        "/v1/adapter-activation",
+        "AdapterActivationRequest",
+        "AdaptersResponse",
+    ),
     ("selectProfile", "post", "/v1/selection", "SelectionRequest", "ProfilesResponse"),
     ("createSession", "post", "/v1/sessions", "SessionRequest", "SessionResponse"),
     ("session", "get", "/v1/sessions/{session_id}", None, "SessionResponse"),
@@ -286,6 +359,9 @@ def openapi() -> dict[str, Any]:
             )
         if name == "profiles":
             parameters.append({"name": "health", "in": "query", "schema": BOOL})
+            parameters.append({"name": "discovery", "in": "query", "schema": BOOL})
+        if name == "adapters":
+            parameters.append({"name": "probe", "in": "query", "schema": BOOL})
         if name == "events":
             parameters.append(
                 {"name": "after", "in": "query", "schema": {"type": "integer", "minimum": 0}}

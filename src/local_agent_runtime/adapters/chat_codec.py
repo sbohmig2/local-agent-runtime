@@ -46,6 +46,8 @@ def chat_body(profile: ModelProfile, invocation: Invocation) -> dict[str, Any]:
             for tool in invocation.tools
         ]
         body["tool_choice"] = "auto"
+    if invocation.reasoning_effort is not None:
+        body["reasoning_effort"] = invocation.reasoning_effort.value
     if invocation.output_schema is not None:
         body["response_format"] = {
             "type": "json_schema",

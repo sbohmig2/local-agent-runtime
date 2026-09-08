@@ -27,7 +27,7 @@ from scripts.build_release import (
     write_manifest,
 )
 
-VERSION = "0.1.3"
+VERSION = "0.2.0"
 COMMIT = "1" * 40
 
 
@@ -178,7 +178,7 @@ def test_release_version_rejects_mismatch(tmp_path: Path, monkeypatch: pytest.Mo
     source.mkdir(parents=True)
     contracts.mkdir()
     (tmp_path / "pyproject.toml").write_text(f'[project]\nversion = "{VERSION}"\n')
-    (client / "package.json").write_text(json.dumps({"version": "0.1.3"}))
+    (client / "package.json").write_text(json.dumps({"version": VERSION}))
     (client / "package-lock.json").write_text(json.dumps({"version": "0.1.0"}))
     (client / "src/host/contracts.ts").write_text(
         f'export const RUNTIME_PACKAGE_VERSION = "{VERSION}";\n'

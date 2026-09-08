@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 import { RuntimeClient } from "../generated.js";
 import type {
+  AdaptersResponse,
   EmbeddingProfilesResponse,
   EmbeddingRequest,
   EmbeddingResponse,
@@ -260,8 +261,26 @@ export class SupervisedRuntime implements RuntimePort {
     return (await this.supervisor.client()).health(signal);
   }
 
-  async profiles(includeHealth = false, signal?: AbortSignal): Promise<ProfilesResponse> {
-    return (await this.supervisor.client()).profiles(includeHealth, signal);
+  async adapters(probe = false, signal?: AbortSignal): Promise<AdaptersResponse> {
+    const client = await this.supervisor.client();
+    if (client.adapters === undefined) throw new HostError("catalog_unavailable", 503);
+    return client.adapters(probe, signal);
+  }
+
+  async setAdapterActivation(
+    body: { option_id: string; enabled: boolean }, signal?: AbortSignal
+  ): Promise<AdaptersResponse> {
+    const client = await this.supervisor.client();
+    if (client.setAdapterActivation === undefined) throw new HostError("activation_unavailable", 503);
+    return client.setAdapterActivation(body, signal);
+  }
+
+  async profiles(
+    includeHealth = false,
+    signal?: AbortSignal,
+    includeDiscovery = false
+  ): Promise<ProfilesResponse> {
+    return (await this.supervisor.client()).profiles(includeHealth, signal, includeDiscovery);
   }
 
   async selectProfile(

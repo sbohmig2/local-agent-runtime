@@ -20,8 +20,10 @@ const CAPABILITIES = {
   token_streaming: false,
   conversation_continuation: true,
   model_discovery: false,
-  token_limit_control: true
+  token_limit_control: true,
+  reasoning_effort_control: true
 };
+const EFFORTS = ["low", "medium", "high"];
 const PROVIDERS = ["codex", "claude", "grok", "lm-studio", "openrouter"];
 const APP_TOKEN = "application-token-that-is-longer-than-thirty-two-characters";
 const ORIGIN = "http://127.0.0.1:5173";
@@ -36,12 +38,16 @@ class FakeRuntime {
   failureCode = "provider_failure";
   failAfterCreate = false;
   malformedTool = false;
+  requestedEffort = null;
+  profileSignals = [];
 
   async health() {
-    return { status: "available", package_version: "0.1.3", api_version: "1.0.0" };
+    return { status: "available", package_version: "0.2.0", api_version: "1.1.0" };
   }
 
-  async profiles(includeHealth = false) {
+  async profiles(includeHealth = false, signal = undefined, includeDiscovery = false) {
+    this.profileSignals.push(signal);
+    if (signal?.aborted === true) throw signal.reason;
     return {
       selected_profile: this.selected,
       profiles: PROVIDERS.map((provider) => ({
@@ -61,6 +67,16 @@ class FakeRuntime {
           (provider === "lm-studio" ? "lm-studio-local" : `${provider}-default`) ===
           this.selected,
         capabilities: CAPABILITIES,
+        reasoning: { efforts: EFFORTS, default: "medium" },
+        ...(includeDiscovery
+          ? {
+              discovery: {
+                supported: provider === "lm-studio",
+                models: provider === "lm-studio" ? [`${provider}-model`] : [],
+                detail_code: provider === "lm-studio" ? null : "discovery_unsupported"
+              }
+            }
+          : {}),
         ...(includeHealth
           ? {
               health: {
@@ -83,6 +99,7 @@ class FakeRuntime {
   }
 
   async createSession(body) {
+    this.requestedEffort = body.reasoning_effort ?? null;
     this.created.push(body);
     this.phase = this.failAfterCreate ? "failed" : "idle";
     return this.state("running");
@@ -124,7 +141,8 @@ class FakeRuntime {
   }
 
   async continueSession(_sessionId, body) {
-    this.created.push({ prompt: body.prompt });
+    if (body.reasoning_effort !== undefined) this.requestedEffort = body.reasoning_effort;
+    this.created.push({ prompt: body.prompt, reasoning_effort: body.reasoning_effort });
     this.phase = "idle";
     return this.state("running");
   }
@@ -175,6 +193,9 @@ class FakeRuntime {
         status === "failed" ? { code: this.failureCode, message: "redacted upstream" } : null,
       effective_model: status === "completed" ? "synthetic-effective" : null,
       effective_upstream: status === "completed" ? "local" : null,
+      requested_reasoning_effort: this.requestedEffort,
+      // Effective effort is provider-reported provenance and often unknown.
+      effective_reasoning_effort: null,
       usage: status === "completed" ? { input_tokens: 10, output_tokens: 4 } : {},
       limits: {
         timeout_seconds: 30,
@@ -521,6 +542,43 @@ function headers(origin = ORIGIN, token = APP_TOKEN) {
   return { Authorization: `Bearer ${token}`, Origin: origin, "Content-Type": "application/json" };
 }
 
+test("adapter host maps catalog semantics and rejects browser configuration injection", async () => {
+  const runtime = new FakeRuntime();
+  const calls = [];
+  const state = {adapters: [{
+    id: "claude_cli", label: "Claude Code", processing: "external", supported: true,
+    configured: true, enabled: false, profile_ids: ["claude-approved"],
+    options: [{id: "claude-approved", profile_id: "claude-approved", model: "opus",
+      enabled: false, can_enable: true, can_disable: false, blocked_reason: null}],
+    probe: {state: "not_checked", installed: null, detail_code: null, checked_at: null}
+  }]};
+  runtime.adapters = async (probe) => { calls.push({probe}); return state; };
+  runtime.setAdapterActivation = async (body) => { calls.push(body); return state; };
+  const host = coordinator(runtime);
+  const catalog = await host.adapters();
+  assert.equal(catalog.adapters[0].options[0].canEnable, true);
+  assert.equal(catalog.adapters[0].options[0].profileId, "claude-approved");
+  assert.equal(catalog.adapters[0].probe.checkedAt, null);
+  const server = new HostHttpServer(host, {
+    host: "127.0.0.1", port: 0, applicationToken: APP_TOKEN, allowedOrigins: new Set([ORIGIN])
+  });
+  await server.start();
+  try {
+    const path = `${server.baseUrl()}/api/local-agent`;
+    assert.equal((await fetch(`${path}/adapters?probe=true`, {headers: headers()})).status, 200);
+    assert.deepEqual(calls.at(-1), {probe: true});
+    assert.equal((await fetch(`${path}/adapter-activation`, {method: "POST", headers: headers(),
+      body: JSON.stringify({optionId: "claude-approved", enabled: true, command: "/evil"})})).status, 400);
+    assert.equal(calls.length, 2);
+    assert.equal((await fetch(`${path}/adapter-activation`, {method: "POST", headers: headers(),
+      body: JSON.stringify({optionId: "claude-approved", enabled: true})})).status, 200);
+    assert.deepEqual(calls.at(-1), {option_id: "claude-approved", enabled: true});
+    assert.equal(runtime.selected, "lm-studio-local");
+  } finally {
+    await server.stop();
+  }
+});
+
 function rawRequest(url, options = {}) {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
@@ -619,7 +677,7 @@ test("HTTP adapter rejects non-literal-loopback binds at runtime", () => {
 test("SSE connects while idle and host shutdown closes the stream", async () => {
   const agent = {
     async health() {
-      return { status: "available", runtimeVersion: "0.1.3", apiVersion: "1.0.0" };
+      return { status: "available", runtimeVersion: "0.2.0", apiVersion: "1.1.0" };
     },
     async profiles() {
       return { selectedProfile: "local", profiles: [] };
@@ -959,4 +1017,217 @@ test("supervised runtime forwards embedding operations without owning an index",
     }),
     { profile_id: "lm-studio-embedding", vectors: [[0.25, 0.75]] }
   );
+});
+
+test("profiles expose reasoning, discovery, readiness and qualification separately", async () => {
+  const host = coordinator();
+
+  const plain = await host.profiles();
+  assert.deepEqual(plain.profiles[0].reasoning, { efforts: EFFORTS, default: "medium" });
+  assert.equal(plain.profiles[0].discovery, undefined);
+  assert.equal(plain.profiles[0].health, undefined);
+
+  const full = await host.profiles(true, true);
+  const local = full.profiles.find((item) => item.providerId === "lm-studio");
+  const remote = full.profiles.find((item) => item.providerId === "codex");
+  assert.deepEqual(local.discovery, {
+    supported: true,
+    models: ["lm-studio-model"],
+    detailCode: null
+  });
+  // A route can be ready and still be unable to enumerate models or be qualified.
+  assert.equal(remote.discovery.supported, false);
+  assert.equal(remote.health.status, "available");
+  assert.equal(remote.qualification, "unqualified");
+  for (const profile of full.profiles) {
+    assert.equal(JSON.stringify(profile).includes("driver"), false);
+  }
+});
+
+test("a supported effort reaches the runtime and an unsupported one never does", async () => {
+  const runtime = new FakeRuntime();
+  const host = coordinator(runtime);
+
+  const started = await host.start({
+    prompt: "Summarize.",
+    privateProcessing: true,
+    reasoningEffort: "high"
+  });
+  assert.equal(started.requestedReasoningEffort, "high");
+  assert.equal(runtime.created[0].reasoning_effort, "high");
+  // The runtime reports what it forwarded; it does not claim what was applied.
+  assert.equal((await host.waitForSettled(started.id)).effectiveReasoningEffort, null);
+
+  await assert.rejects(
+    host.start({ prompt: "Summarize.", privateProcessing: true, reasoningEffort: "max" }),
+    (error) => error instanceof HostError && error.code === "reasoning_effort_unsupported"
+  );
+  assert.equal(runtime.created.length, 1);
+});
+
+test("existing no-effort callers keep their request shape", async () => {
+  const runtime = new FakeRuntime();
+  const host = coordinator(runtime);
+  const started = await host.start({ prompt: "Summarize.", privateProcessing: true });
+  assert.equal(Object.hasOwn(runtime.created[0], "reasoning_effort"), false);
+  assert.equal(started.requestedReasoningEffort, null);
+  assert.equal(started.effectiveReasoningEffort, null);
+});
+
+test("each continued turn carries its own effort", async () => {
+  const runtime = new FakeRuntime();
+  const host = coordinator(runtime);
+  const started = await host.start({
+    prompt: "First.",
+    privateProcessing: true,
+    reasoningEffort: "low"
+  });
+  await host.waitForSettled(started.id);
+
+  await host.continue(started.id, "Second.", { reasoningEffort: "high" });
+  assert.equal(runtime.created[1].reasoning_effort, "high");
+  await host.waitForSettled(started.id);
+
+  // No override continues at the effort already in use rather than resetting it.
+  await host.continue(started.id, "Third.");
+  assert.equal(runtime.created[2].reasoning_effort, "high");
+  assert.equal(host.session(started.id).requestedReasoningEffort, "high");
+  await host.waitForSettled(started.id);
+
+  await assert.rejects(
+    host.continue(started.id, "Fourth.", { reasoningEffort: "max" }),
+    (error) => error instanceof HostError && error.code === "reasoning_effort_unsupported"
+  );
+  assert.equal(runtime.created.length, 3);
+});
+
+test("continuation authorizes an effort override before dispatch", async () => {
+  const runtime = new FakeRuntime();
+  const authorized = [];
+  const host = coordinator(runtime, new FakeCatalog(), {
+    authorizeProcessing: (request, profile) => {
+      authorized.push({ ...request });
+      return request.reasoningEffort === "high" ? "deny" : authorizePrivate(request, profile);
+    }
+  });
+  const started = await host.start({
+    prompt: "First.",
+    privateProcessing: true,
+    reasoningEffort: "low"
+  });
+  await host.waitForSettled(started.id);
+
+  await assert.rejects(
+    host.continue(started.id, "Second.", { reasoningEffort: "high" }),
+    (error) => error instanceof HostError && error.code === "processing_not_allowed"
+  );
+  assert.equal(authorized.at(-1).reasoningEffort, "high");
+  assert.equal(runtime.created.length, 1);
+});
+
+test("continuation retains a dispatched effort for inherited authorization", async () => {
+  const runtime = new FakeRuntime();
+  let allowHigh = true;
+  const authorized = [];
+  const host = coordinator(runtime, new FakeCatalog(), {
+    authorizeProcessing: (request, profile) => {
+      authorized.push({ ...request });
+      if (request.reasoningEffort === "high" && !allowHigh) return "deny";
+      return authorizePrivate(request, profile);
+    }
+  });
+  const started = await host.start({
+    prompt: "First.",
+    privateProcessing: true,
+    reasoningEffort: "low"
+  });
+  await host.waitForSettled(started.id);
+
+  await host.continue(started.id, "Second.", { reasoningEffort: "high" });
+  assert.equal(runtime.created[1].reasoning_effort, "high");
+  await host.waitForSettled(started.id);
+
+  allowHigh = false;
+  await assert.rejects(
+    host.continue(started.id, "Third."),
+    (error) => error instanceof HostError && error.code === "processing_not_allowed"
+  );
+  assert.equal(authorized.at(-1).reasoningEffort, "high");
+  assert.equal(runtime.created.length, 2);
+});
+
+test("the HTTP adapter validates effort and discovery without provider knowledge", async () => {
+  const runtime = new FakeRuntime();
+  const agent = coordinator(runtime);
+  const server = new HostHttpServer(agent, {
+    host: "127.0.0.1",
+    port: 0,
+    applicationToken: APP_TOKEN,
+    allowedOrigins: new Set([ORIGIN])
+  });
+  await server.start();
+  const post = (body) =>
+    fetch(`${server.baseUrl()}/api/local-agent/sessions`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify(body)
+    });
+  try {
+    const catalog = await fetch(
+      `${server.baseUrl()}/api/local-agent/profiles?health=true&discovery=true`,
+      { headers: headers() }
+    );
+    assert.equal(catalog.status, 200);
+    const listed = await catalog.json();
+    assert.deepEqual(listed.profiles[0].reasoning, { efforts: EFFORTS, default: "medium" });
+
+    const badQuery = await fetch(
+      `${server.baseUrl()}/api/local-agent/profiles?discovery=maybe`,
+      { headers: headers() }
+    );
+    assert.equal(badQuery.status, 400);
+
+    assert.equal(
+      (await post({ prompt: "Hello.", privateProcessing: true, reasoningEffort: "enormous" }))
+        .status,
+      400
+    );
+    const refused = await post({
+      prompt: "Hello.",
+      privateProcessing: true,
+      reasoningEffort: "max"
+    });
+    assert.equal(refused.status, 400);
+    assert.deepEqual(await refused.json(), {
+      error: { code: "reasoning_effort_unsupported" }
+    });
+
+    const accepted = await post({
+      prompt: "Hello.",
+      privateProcessing: true,
+      reasoningEffort: "medium"
+    });
+    assert.equal(accepted.status, 202);
+    assert.equal((await accepted.json()).requestedReasoningEffort, "medium");
+    assert.equal(runtime.created.at(-1).reasoning_effort, "medium");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("an existing positional AbortSignal caller still cancels a profile read", async () => {
+  const runtime = new FakeRuntime();
+  const host = coordinator(runtime);
+  const controller = new AbortController();
+  controller.abort(new HostError("canceled", 499));
+
+  // The pre-existing call shape is profiles(includeHealth, signal).
+  await assert.rejects(
+    runtime.profiles(true, controller.signal),
+    (error) => error instanceof HostError && error.code === "canceled"
+  );
+  assert.equal(runtime.profileSignals.at(-1), controller.signal);
+
+  await host.profiles(true, true);
+  assert.equal(runtime.profileSignals.at(-1), undefined);
 });

@@ -3,9 +3,9 @@
 This is the only approved pickup list. Task frontmatter is the status source of
 truth.
 
-## Active lane
+## Review lane
 
-No implementation task is active.
+- [LAR-005 - Deliver model selection and reasoning controls](./LAR-005-deliver-model-selection-and-reasoning-controls.md)
 
 ## Queued lane
 

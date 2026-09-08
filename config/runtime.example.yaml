@@ -20,6 +20,9 @@ providers:
     upstream: replace-with-exact-openrouter-provider-slug
 
 profiles:
+  # `reasoning_efforts` attests what the exact pinned model supports. It cannot
+  # introduce a level the route has no way to send, and `model: default` is an
+  # alias rather than a model identity, so declare it only for a pinned model.
   codex-default:
     provider: codex
     model: default
@@ -38,6 +41,11 @@ profiles:
     allow_external_processing: true
     allow_private_processing: false
     qualified_tasks: []
+  # LM Studio accepts the OpenAI `reasoning_effort` field but reports no per-model
+  # support, so the runtime claims none until an operator declares it for a model
+  # they know reasons. Leave it out for a model that would ignore the field:
+  #   reasoning_efforts: [low, medium, high]
+  #   default_reasoning_effort: medium
   lm-studio-local:
     provider: lm-studio
     model: replace-with-the-model-identifier-shown-by-lm-studio

@@ -1,13 +1,37 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import type { HostEvent, HostSession, PublicProfile, StartSessionRequest } from "./contracts.js";
+import type {
+  ContinueSessionOptions,
+  HostEvent,
+  HostSession,
+  PublicProfile,
+  PublicAdapterCatalog,
+  ReasoningEffort,
+  StartSessionRequest
+} from "./contracts.js";
 import { HostError, safeError } from "./errors.js";
 
 const MAX_BODY_BYTES = 1_000_000;
 const DEFAULT_MAX_EVENT_STREAMS = 100;
 const SSE_HEARTBEAT_MS = 15_000;
 const TERMINAL = new Set(["approval_required", "completed", "failed", "canceled"]);
+const REASONING_EFFORTS: ReadonlySet<string> = new Set([
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+]);
+
+function reasoningEffort(value: unknown): ReasoningEffort | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !REASONING_EFFORTS.has(value)) {
+    throw new HostError("invalid_request", 400);
+  }
+  return value as ReasoningEffort;
+}
 
 function sameToken(header: string | undefined, expected: string): boolean {
   if (header === undefined || !header.startsWith("Bearer ")) return false;
@@ -41,8 +65,13 @@ function exactQuery(url: URL, allowed: ReadonlySet<string>): void {
 }
 
 export interface ProductAgentPort {
+  adapters?(probe?: boolean): Promise<PublicAdapterCatalog>;
+  setAdapterActivation?(optionId: string, enabled: boolean): Promise<PublicAdapterCatalog>;
   health(): Promise<{ status: "available"; runtimeVersion: string; apiVersion: string }>;
-  profiles(includeHealth?: boolean): Promise<{
+  profiles(
+    includeHealth?: boolean,
+    includeDiscovery?: boolean
+  ): Promise<{
     selectedProfile: string;
     profiles: PublicProfile[];
   }>;
@@ -51,7 +80,11 @@ export interface ProductAgentPort {
     profiles: PublicProfile[];
   }>;
   start(request: StartSessionRequest): Promise<HostSession>;
-  continue(sessionId: string, prompt: string): Promise<HostSession>;
+  continue(
+    sessionId: string,
+    prompt: string,
+    options?: ContinueSessionOptions
+  ): Promise<HostSession>;
   session(sessionId: string): HostSession;
   events(sessionId: string, after?: number): HostEvent[];
   cancel(sessionId: string): Promise<HostSession>;
@@ -209,10 +242,35 @@ export class HostHttpServer {
       return;
     }
     if (request.method === "GET" && url.pathname === `${this.pathPrefix}/profiles`) {
-      exactQuery(url, new Set(["health"]));
+      exactQuery(url, new Set(["health", "discovery"]));
       const health = url.searchParams.get("health") ?? "false";
-      if (health !== "true" && health !== "false") throw new HostError("invalid_request", 400);
-      this.json(response, 200, await this.host.profiles(health === "true"));
+      const discovery = url.searchParams.get("discovery") ?? "false";
+      if (
+        (health !== "true" && health !== "false") ||
+        (discovery !== "true" && discovery !== "false")
+      ) {
+        throw new HostError("invalid_request", 400);
+      }
+      this.json(response, 200, await this.host.profiles(health === "true", discovery === "true"));
+      return;
+    }
+    if (request.method === "GET" && url.pathname === `${this.pathPrefix}/adapters`) {
+      exactQuery(url, new Set(["probe"]));
+      const probe = url.searchParams.get("probe") ?? "false";
+      if (probe !== "true" && probe !== "false") throw new HostError("invalid_request", 400);
+      if (this.host.adapters === undefined) throw new HostError("catalog_unavailable", 503);
+      this.json(response, 200, await this.host.adapters(probe === "true"));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === `${this.pathPrefix}/adapter-activation`) {
+      exactQuery(url, new Set());
+      const body = object(await this.readBody(request));
+      exactKeys(body, new Set(["optionId", "enabled"]));
+      if (typeof body.optionId !== "string" || typeof body.enabled !== "boolean") {
+        throw new HostError("invalid_request", 400);
+      }
+      if (this.host.setAdapterActivation === undefined) throw new HostError("activation_unavailable", 503);
+      this.json(response, 200, await this.host.setAdapterActivation(body.optionId, body.enabled));
       return;
     }
     if (request.method === "POST" && url.pathname === `${this.pathPrefix}/selection`) {
@@ -233,10 +291,12 @@ export class HostHttpServer {
           "profileId",
           "taskCode",
           "privateProcessing",
-          "allowExternalProcessing"
+          "allowExternalProcessing",
+          "reasoningEffort"
         ])
       );
       if (typeof body.prompt !== "string") throw new HostError("invalid_request", 400);
+      const effort = reasoningEffort(body.reasoningEffort);
       const start: StartSessionRequest = {
         prompt: body.prompt,
         ...(typeof body.profileId === "string" ? { profileId: body.profileId } : {}),
@@ -246,7 +306,8 @@ export class HostHttpServer {
           : {}),
         ...(typeof body.allowExternalProcessing === "boolean"
           ? { allowExternalProcessing: body.allowExternalProcessing }
-          : {})
+          : {}),
+        ...(effort === undefined ? {} : { reasoningEffort: effort })
       };
       if (
         (body.profileId !== undefined && typeof body.profileId !== "string") ||
@@ -292,9 +353,18 @@ export class HostHttpServer {
       if (request.method === "POST" && operation === "input") {
         exactQuery(url, new Set());
         const body = object(await this.readBody(request));
-        exactKeys(body, new Set(["prompt"]));
+        exactKeys(body, new Set(["prompt", "reasoningEffort"]));
         if (typeof body.prompt !== "string") throw new HostError("invalid_request", 400);
-        this.json(response, 202, await this.host.continue(sessionId, body.prompt));
+        const effort = reasoningEffort(body.reasoningEffort);
+        this.json(
+          response,
+          202,
+          await this.host.continue(
+            sessionId,
+            body.prompt,
+            effort === undefined ? {} : { reasoningEffort: effort }
+          )
+        );
         return;
       }
       if (request.method === "POST" && operation === "cancel") {

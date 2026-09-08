@@ -19,11 +19,13 @@ def _bounded_prompt(invocation: Invocation) -> str:
     serialized = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     if len(serialized) > invocation.limits.max_input_chars:
         raise RuntimeFailure("input_limit_exceeded", "The session input exceeds its limit")
+    names = ", ".join(tool.name for tool in invocation.tools) or "none"
     return (
         "Return only one JSON object with keys content and tool_calls. content must be a "
         "string. tool_calls must be a list of objects with id, name, and arguments. "
         "arguments must be a JSON-encoded string containing the tool argument object. "
-        "Request only tools listed in the supplied catalog. If no tool is needed, return "
+        "name must be exactly one of these supplied catalog names and nothing else, "
+        f"including any tool you have of your own: {names}. If no tool is needed, return "
         "the final answer in content and an empty tool_calls list. If final_content_json_schema "
         "is supplied, content must be a JSON string conforming to that schema.\n\n" + serialized
     )
@@ -76,7 +78,15 @@ def _parse_envelope(raw: str, profile: ModelProfile) -> CompletionResult:
     )
 
 
-def _output_schema() -> dict[str, Any]:
+def _output_schema(names: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Constrain tool names to the exact catalog at the protocol level.
+
+    A model that invents a name still fails closed in the application; naming the
+    permitted values in the schema stops the common case at the provider instead.
+    """
+    name: dict[str, Any] = (
+        {"type": "string", "enum": list(names)} if names else {"type": "string", "minLength": 1}
+    )
     return {
         "type": "object",
         "additionalProperties": False,
@@ -85,13 +95,14 @@ def _output_schema() -> dict[str, Any]:
             "content": {"type": "string"},
             "tool_calls": {
                 "type": "array",
+                "maxItems": 0 if not names else 128,
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
                     "required": ["id", "name", "arguments"],
                     "properties": {
                         "id": {"type": "string", "minLength": 1},
-                        "name": {"type": "string", "minLength": 1},
+                        "name": name,
                         "arguments": {"type": "string"},
                     },
                 },

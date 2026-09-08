@@ -15,11 +15,15 @@ from typing import Any
 from jsonschema import ValidationError, validate
 
 from local_agent_runtime.contracts import (
+    HealthStatus,
     Invocation,
     Message,
+    ModelDiscovery,
     ModelProfile,
     ProcessingClass,
     ProviderConnection,
+    ProviderHealth,
+    ReasoningEffort,
     RuntimeConfiguration,
     SessionEvent,
     SessionStatus,
@@ -30,7 +34,12 @@ from local_agent_runtime.contracts import (
 )
 from local_agent_runtime.embeddings import EmbeddingService
 from local_agent_runtime.errors import RuntimeFailure, conflict, invalid_request, not_found
-from local_agent_runtime.ports import ProviderFactory, SelectionPort
+from local_agent_runtime.ports import (
+    ActivationPort,
+    AdapterCatalogPort,
+    ProviderFactory,
+    SelectionPort,
+)
 from local_agent_runtime.validation import checked_schema, json_text, validate_output
 
 TOOL_NAME = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.:-]{0,127}$")
@@ -38,6 +47,7 @@ TOOL_REQUEST_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$")
 MAX_TOOLS = 128
 MAX_EVENTS = 512
 MAX_TOOL_RESULT_CHARS = 100_000
+PROBE_TIMEOUT_SECONDS: float = 20
 
 
 @dataclass
@@ -63,6 +73,8 @@ class SessionRecord:
     failure: dict[str, str] | None = None
     effective_model: str | None = None
     effective_upstream: str | None = None
+    requested_reasoning_effort: ReasoningEffort | None = None
+    effective_reasoning_effort: ReasoningEffort | None = None
     usage: dict[str, int | float] = field(default_factory=dict)
     validation: str = "pending"
     task: asyncio.Task[None] | None = None
@@ -94,6 +106,16 @@ class SessionRecord:
             "failure": self.failure,
             "effective_model": self.effective_model,
             "effective_upstream": self.effective_upstream,
+            "requested_reasoning_effort": (
+                self.requested_reasoning_effort.value
+                if self.requested_reasoning_effort is not None
+                else None
+            ),
+            "effective_reasoning_effort": (
+                self.effective_reasoning_effort.value
+                if self.effective_reasoning_effort is not None
+                else None
+            ),
             "usage": dict(self.usage),
             "limits": asdict(self.profile.limits),
             "validation": self.validation,
@@ -109,6 +131,8 @@ class RuntimeService:
         *,
         provider_factory: ProviderFactory,
         embeddings: EmbeddingService | None = None,
+        activation: ActivationPort | None = None,
+        adapter_catalog: AdapterCatalogPort | None = None,
     ) -> None:
         self.configuration = configuration
         self.selection = selection
@@ -116,10 +140,172 @@ class RuntimeService:
         self.provider_factory = provider_factory
         self.sessions: dict[str, SessionRecord] = {}
         self._selection_lock = asyncio.Lock()
+        self.activation = activation
+        self.adapter_catalog = adapter_catalog
+        self._activation_state = dict(activation.read()) if activation is not None else {}
+        if any(
+            key not in configuration.managed_profiles or type(value) is not bool
+            for key, value in self._activation_state.items()
+        ) or any(
+            not self._enabled(profile_id)
+            for profile_id in (configuration.default_profile, *configuration.task_routes.values())
+        ):
+            raise RuntimeFailure(
+                "activation_unavailable", "Runtime activation policy changed", status_code=503
+            )
+
+    def _enabled(self, profile_id: str) -> bool:
+        return self._activation_state.get(
+            profile_id, self.configuration.managed_profiles.get(profile_id, True)
+        )
+
+    def _activation_blocker(self, profile_id: str) -> str | None:
+        if profile_id not in self.configuration.managed_profiles or self.activation is None:
+            return "operator_managed"
+        if profile_id == self.configuration.default_profile:
+            return "default_profile"
+        if not self._enabled(profile_id):
+            return None
+        try:
+            selected = self.selected_profile()
+        except RuntimeFailure as exc:
+            if exc.code != "selection_unavailable":
+                raise
+            # Catalog inspection must remain available to repair stale selection.
+            # Dispatch and profile_state still require a valid selected profile.
+            selected = None
+        if profile_id == selected:
+            return "selected_profile"
+        if profile_id in self.configuration.task_routes.values():
+            return "task_route_in_use"
+        now = utc_now()
+        if any(
+            record.profile.id == profile_id
+            and (
+                record.status is SessionStatus.RUNNING
+                or (now - record.updated_at).total_seconds() <= 1800
+            )
+            for record in self.sessions.values()
+        ):
+            return "profile_in_use"
+        return None
+
+    async def adapter_state(self, *, probe: bool = False) -> dict[str, Any]:
+        if self.adapter_catalog is None:
+            raise RuntimeFailure(
+                "catalog_unavailable", "Adapter catalog is unavailable", status_code=503
+            )
+        catalog = self.adapter_catalog
+        definitions = catalog.supported()
+
+        async def inspect(driver: str) -> dict[str, Any]:
+            checked_at = utc_now().isoformat()
+            try:
+                async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+                    result = dict(
+                        await catalog.probe(
+                            driver,
+                            [
+                                connection
+                                for connection in self.configuration.providers.values()
+                                if connection.driver == driver
+                            ],
+                        )
+                    )
+                discovery = result.pop("discovery", None)
+                return {
+                    "probe": {"state": "checked", **result, "checked_at": checked_at},
+                    **({"discovery": discovery} if discovery is not None else {}),
+                }
+            except (Exception, TimeoutError):
+                return {
+                    "probe": {
+                        "state": "failed",
+                        "installed": None,
+                        "detail_code": "probe_failed",
+                        "checked_at": checked_at,
+                    }
+                }
+
+        probes = (
+            await asyncio.gather(*(inspect(item["id"]) for item in definitions)) if probe else []
+        )
+        adapters = []
+        for index, definition in enumerate(definitions):
+            profiles = [
+                profile
+                for profile in self.configuration.profiles.values()
+                if self.configuration.providers[profile.provider_id].driver == definition["id"]
+            ]
+            options = []
+            for profile in profiles:
+                enabled = self._enabled(profile.id)
+                blocker = self._activation_blocker(profile.id)
+                options.append(
+                    {
+                        "id": profile.id,
+                        "profile_id": profile.id,
+                        "model": profile.model,
+                        "enabled": enabled,
+                        "can_enable": not enabled and blocker is None,
+                        "can_disable": enabled and blocker is None,
+                        "blocked_reason": blocker,
+                    }
+                )
+            adapters.append(
+                {
+                    **definition,
+                    "supported": True,
+                    "configured": bool(profiles),
+                    "enabled": any(self._enabled(profile.id) for profile in profiles),
+                    "profile_ids": [profile.id for profile in profiles],
+                    "options": options,
+                    **(
+                        probes[index]
+                        if probe
+                        else {
+                            "probe": {
+                                "state": "not_checked",
+                                "installed": None,
+                                "detail_code": None,
+                                "checked_at": None,
+                            }
+                        }
+                    ),
+                }
+            )
+        return {"adapters": adapters}
+
+    async def set_adapter_activation(self, option_id: Any, enabled: Any) -> dict[str, Any]:
+        if (
+            not isinstance(option_id, str)
+            or option_id not in self.configuration.managed_profiles
+            or type(enabled) is not bool
+        ):
+            raise invalid_request("The activation option is unknown or invalid")
+        if self.activation is None:
+            raise RuntimeFailure(
+                "activation_unavailable", "Managed activation is unavailable", status_code=503
+            )
+        async with self._selection_lock:
+            if self._enabled(option_id) != enabled:
+                blocker = self._activation_blocker(option_id)
+                if blocker is not None:
+                    raise RuntimeFailure(
+                        blocker,
+                        "The configured default profile cannot be disabled"
+                        if blocker == "default_profile"
+                        else "The profile cannot be disabled while selected or in use",
+                        status_code=409,
+                    )
+                updated = {**self._activation_state, option_id: enabled}
+                self.activation.write(updated)
+                self._activation_state = updated
+        return await self.adapter_state()
 
     def selected_profile(self) -> str:
         profile_id = self.selection.read(self.configuration.default_profile)
-        if profile_id not in self.configuration.profiles:
+        if profile_id not in self.configuration.profiles or not self._enabled(profile_id):
             raise RuntimeFailure(
                 "selection_unavailable",
                 "The selected profile is no longer configured",
@@ -131,15 +317,43 @@ class RuntimeService:
         if not isinstance(profile_id, str) or profile_id not in self.configuration.profiles:
             raise invalid_request("The selected profile is unknown")
         async with self._selection_lock:
+            if not self._enabled(profile_id):
+                raise invalid_request("The selected profile is disabled")
             self.selection.write(profile_id)
         return await self.profile_state()
 
-    async def profile_state(self, *, include_health: bool = False) -> dict[str, Any]:
+    async def _probe(self, operation: Any, timeout: float, code: str) -> dict[str, Any]:
+        """Bound one provider probe. A failing probe is per-profile state, not an outage."""
+        try:
+            async with asyncio.timeout(timeout):
+                return dict((await operation()).public_dict())
+        except TimeoutError:
+            return {"failed": "probe_timed_out"}
+        except RuntimeFailure as exc:
+            return {"failed": exc.code}
+        except Exception:
+            return {"failed": code}
+
+    async def profile_state(
+        self, *, include_health: bool = False, include_discovery: bool = False
+    ) -> dict[str, Any]:
         selected = self.selected_profile()
         profiles: list[dict[str, Any]] = []
+        adapters = {
+            profile_id: self.provider_factory(
+                self.configuration.providers[profile.provider_id], profile
+            )
+            for profile_id, profile in self.configuration.profiles.items()
+            if self._enabled(profile_id)
+        }
+        health = await self._health_probes(adapters) if include_health else {}
+        discovery = await self._discovery_probes(adapters) if include_discovery else {}
         for profile_id, profile in self.configuration.profiles.items():
+            if not self._enabled(profile_id):
+                continue
             connection = self.configuration.providers[profile.provider_id]
-            adapter = self.provider_factory(connection, profile)
+            adapter = adapters[profile_id]
+            efforts = adapter.reasoning_efforts
             item: dict[str, Any] = {
                 "id": profile_id,
                 "provider_id": connection.id,
@@ -155,11 +369,83 @@ class RuntimeService:
                 },
                 "selected": profile_id == selected,
                 "capabilities": adapter.capabilities.public_dict(),
+                "reasoning": {
+                    "efforts": [effort.value for effort in efforts],
+                    "default": (
+                        profile.default_reasoning_effort.value
+                        if profile.default_reasoning_effort is not None
+                        else None
+                    ),
+                },
             }
             if include_health:
-                item["health"] = (await adapter.health()).public_dict()
+                item["health"] = health[profile_id]
+            if include_discovery:
+                item["discovery"] = discovery[connection.id]
             profiles.append(item)
         return {"selected_profile": selected, "profiles": profiles}
+
+    async def _health_probes(self, adapters: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+        # Readiness is per profile because limits and model identity differ.
+        results = await asyncio.gather(
+            *(
+                self._probe(adapter.health, PROBE_TIMEOUT_SECONDS, "health_probe_failed")
+                for adapter in adapters.values()
+            )
+        )
+        return {
+            profile_id: value
+            if "failed" not in value
+            else ProviderHealth(
+                HealthStatus.INCONCLUSIVE,
+                installed=None,
+                authenticated=None,
+                compatible=None,
+                detail_code=value["failed"],
+            ).public_dict()
+            for profile_id, value in zip(adapters, results, strict=True)
+        }
+
+    async def _discovery_probes(self, adapters: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+        # Enumeration belongs to a connection, so one probe serves every profile on it.
+        chosen: dict[str, Any] = {}
+        for profile_id, adapter in adapters.items():
+            chosen.setdefault(self.configuration.profiles[profile_id].provider_id, adapter)
+        results = await asyncio.gather(
+            *(
+                self._probe(
+                    adapter.discover_models, PROBE_TIMEOUT_SECONDS, "discovery_probe_failed"
+                )
+                for adapter in chosen.values()
+            )
+        )
+        return {
+            provider_id: value
+            if "failed" not in value
+            else ModelDiscovery(supported=True, detail_code=value["failed"]).public_dict()
+            for provider_id, value in zip(chosen, results, strict=True)
+        }
+
+    def _reasoning_effort(
+        self, profile: ModelProfile, connection: ProviderConnection, value: Any
+    ) -> ReasoningEffort | None:
+        """Resolve one turn's effort. Unsupported values fail before any dispatch."""
+        supported = self.provider_factory(connection, profile).reasoning_efforts
+        if value is None:
+            default = profile.default_reasoning_effort
+            return default if default in supported else None
+        if not isinstance(value, str):
+            raise invalid_request("The reasoning effort is invalid")
+        try:
+            effort = ReasoningEffort(value)
+        except ValueError:
+            raise invalid_request("The reasoning effort is unknown") from None
+        if effort not in supported:
+            raise RuntimeFailure(
+                "reasoning_effort_unsupported",
+                "The selected profile does not support the requested reasoning effort",
+            )
+        return effort
 
     @staticmethod
     def _tools(value: Sequence[ToolDefinition]) -> tuple[ToolDefinition, ...]:
@@ -190,6 +476,7 @@ class RuntimeService:
         private_processing: bool = False,
         allow_external_processing: bool = False,
         output_schema: Mapping[str, Any] | None = None,
+        reasoning_effort: Any = None,
     ) -> dict[str, Any]:
         if not isinstance(prompt, str) or not prompt.strip():
             raise invalid_request("The session prompt is invalid")
@@ -209,6 +496,8 @@ class RuntimeService:
         selected = profile_id or routed or self.selected_profile()
         if selected not in self.configuration.profiles:
             raise invalid_request("The session profile is unknown")
+        if not self._enabled(selected):
+            raise invalid_request("The session profile is disabled")
         profile = self.configuration.profiles[selected]
         connection = self.configuration.providers[profile.provider_id]
         if connection.processing is ProcessingClass.EXTERNAL and not (
@@ -247,6 +536,9 @@ class RuntimeService:
             private_processing=private_processing,
             task_code=task_code,
             output_schema=checked_schema(output_schema) if output_schema is not None else None,
+            requested_reasoning_effort=self._reasoning_effort(
+                profile, connection, reasoning_effort
+            ),
         )
         record.add_event("session_created", {"profile_id": profile.id, "task_code": task_code})
         self._ensure_schedulable(record, record.messages)
@@ -305,10 +597,12 @@ class RuntimeService:
                         record.tools,
                         record.profile.limits,
                         record.output_schema,
+                        record.requested_reasoning_effort,
                     )
                 )
             record.effective_model = result.effective_model
             record.effective_upstream = result.effective_upstream
+            record.effective_reasoning_effort = result.effective_reasoning_effort
             for name, count in result.usage.items():
                 record.usage[name] = record.usage.get(name, 0) + count
             output_size = len(result.text) + len(
@@ -380,6 +674,11 @@ class RuntimeService:
                         "text": result.text,
                         "effective_model": result.effective_model,
                         "effective_upstream": result.effective_upstream,
+                        "effective_reasoning_effort": (
+                            result.effective_reasoning_effort.value
+                            if result.effective_reasoning_effort is not None
+                            else None
+                        ),
                         "usage": dict(result.usage),
                     },
                 )
@@ -442,17 +741,29 @@ class RuntimeService:
         self._schedule(record)
         return record.public_dict()
 
-    async def continue_session(self, session_id: str, prompt: Any) -> dict[str, Any]:
+    async def continue_session(
+        self, session_id: str, prompt: Any, reasoning_effort: Any = None
+    ) -> dict[str, Any]:
         record = self._record(session_id)
         if record.status is not SessionStatus.COMPLETED:
             raise conflict("Only a completed session can receive follow-up input")
         if not isinstance(prompt, str) or not prompt.strip():
             raise invalid_request("The follow-up prompt is invalid")
+        # Each turn snapshots its own effort; a running turn is never re-targeted.
+        # No override continues the conversation at the effort already in use, so a
+        # follow-up never silently drops back to the profile default.
+        effort = (
+            record.requested_reasoning_effort
+            if reasoning_effort is None
+            else self._reasoning_effort(record.profile, record.connection, reasoning_effort)
+        )
         self._ensure_schedulable(record, [*record.messages, Message("user", prompt)])
         record.final_text = None
         record.failure = None
         record.effective_model = None
         record.effective_upstream = None
+        record.requested_reasoning_effort = effort
+        record.effective_reasoning_effort = None
         record.validation = "pending"
         record.messages.append(Message("user", prompt))
         record.add_event("user_input_received")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from typing import cast
@@ -10,8 +11,9 @@ import httpx
 import pytest
 from jsonschema import Draft202012Validator
 
+import local_agent_runtime.service as service_module
 from local_agent_runtime.adapters.selection import SelectionStore
-from local_agent_runtime.api_contract import SCHEMAS
+from local_agent_runtime.api_contract import API_VERSION, SCHEMAS
 from local_agent_runtime.configuration import load_configuration
 from local_agent_runtime.contracts import (
     Capabilities,
@@ -20,10 +22,12 @@ from local_agent_runtime.contracts import (
     Invocation,
     Limits,
     Message,
+    ModelDiscovery,
     ModelProfile,
     ProcessingClass,
     ProviderConnection,
     ProviderHealth,
+    ReasoningEffort,
     RuntimeConfiguration,
     ToolDefinition,
     ToolRequest,
@@ -34,6 +38,7 @@ from local_agent_runtime.errors import RuntimeFailure
 from local_agent_runtime.gateway import create_app
 from local_agent_runtime.providers import build_provider
 from local_agent_runtime.service import RuntimeService
+from local_agent_runtime.version import PACKAGE_VERSION
 
 TOKEN = "t" * 40
 TOOL = ToolDefinition(
@@ -49,7 +54,7 @@ TOOL = ToolDefinition(
 
 
 class FakeProvider:
-    capabilities = Capabilities()
+    capabilities = Capabilities(reasoning_effort_control=True)
 
     def __init__(self, connection: ProviderConnection, profile: ModelProfile) -> None:
         self.connection = connection
@@ -57,10 +62,36 @@ class FakeProvider:
         self.result = CompletionResult("answer", (), "model")
         self.invocations: list[Invocation] = []
         self.delay_seconds = 0.0
+        self.health_delay = 0.0
+        self.health_failure: RuntimeFailure | None = None
+        self.discovery_hangs = False
+        self.probes_forbidden = False
         self.health_calls = 0
+        self.discovery_calls = 0
+        self.confirm_effort = True
+        self.efforts: tuple[ReasoningEffort, ...] = (
+            ReasoningEffort.LOW,
+            ReasoningEffort.HIGH,
+        )
+
+    @property
+    def reasoning_efforts(self) -> tuple[ReasoningEffort, ...]:
+        return self.efforts
+
+    async def discover_models(self) -> ModelDiscovery:
+        assert not self.probes_forbidden, "A plain catalog must stay offline"
+        self.discovery_calls += 1
+        if self.discovery_hangs:
+            await asyncio.sleep(3600)
+        return ModelDiscovery(supported=True, models=("model", "other-model"))
 
     async def health(self) -> ProviderHealth:
+        assert not self.probes_forbidden, "A plain catalog must stay offline"
         self.health_calls += 1
+        if self.health_delay:
+            await asyncio.sleep(self.health_delay)
+        if self.health_failure is not None:
+            raise self.health_failure
         return ProviderHealth(
             HealthStatus.AVAILABLE,
             installed=True,
@@ -72,7 +103,9 @@ class FakeProvider:
         self.invocations.append(invocation)
         if self.delay_seconds:
             await asyncio.sleep(self.delay_seconds)
-        return self.result
+        if invocation.reasoning_effort is None or not self.confirm_effort:
+            return self.result
+        return replace(self.result, effective_reasoning_effort=invocation.reasoning_effort)
 
 
 def runtime(tmp_path: Path) -> tuple[RuntimeService, FakeProvider]:
@@ -236,8 +269,8 @@ def test_gateway_embeddings_auth_ipv6_and_schemas(tmp_path: Path) -> None:
             assert_schema("HealthResponse", health.json())
             assert health.json() == {
                 "status": "available",
-                "package_version": "0.1.3",
-                "api_version": "1.0.0",
+                "package_version": PACKAGE_VERSION,
+                "api_version": API_VERSION,
             }
             created = await client.post(
                 "/v1/sessions",
@@ -565,5 +598,244 @@ def test_gateway_cancel_and_future_event_cursor(tmp_path: Path) -> None:
             assert canceled.status_code == 200
             assert canceled.json()["status"] == "canceled"
             assert canceled.json()["validation"] == "not_validated"
+
+    asyncio.run(run())
+
+
+def test_catalog_separates_reasoning_readiness_discovery_and_qualification(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+        plain = await service.profile_state()
+        entry = plain["profiles"][0]
+        assert entry["reasoning"] == {"efforts": ["low", "high"], "default": None}
+        assert "health" not in entry and "discovery" not in entry
+        assert fake.health_calls == 0 and fake.discovery_calls == 0
+
+        full = await service.profile_state(include_health=True, include_discovery=True)
+        entry = full["profiles"][0]
+        assert entry["health"]["status"] == "available"
+        assert entry["discovery"] == {
+            "supported": True,
+            "models": ["model", "other-model"],
+            "detail_code": None,
+        }
+        # Readiness never implies enumeration and neither implies task fitness.
+        assert entry["qualification"] == {"status": "unqualified", "tasks": []}
+        assert_schema("ProfilesResponse", full)
+
+    asyncio.run(run())
+
+
+def test_supported_effort_reaches_the_provider_and_is_reported(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+        created = await service.create_session("question", reasoning_effort="high")
+        assert created["requested_reasoning_effort"] == "high"
+        settled = await service.wait(created["id"])
+        assert fake.invocations[0].reasoning_effort is ReasoningEffort.HIGH
+        # Effective effort is provider-reported provenance, never an echo.
+        assert settled["effective_reasoning_effort"] == "high"
+        fake.confirm_effort = False
+        again = await service.wait(
+            (await service.create_session("question", reasoning_effort="high"))["id"]
+        )
+        assert again["requested_reasoning_effort"] == "high"
+        assert again["effective_reasoning_effort"] is None
+        assert_schema("SessionResponse", settled)
+
+    asyncio.run(run())
+
+
+def test_unsupported_effort_fails_before_the_provider_is_reached(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+        for value in ("medium", "not-an-effort", 5):
+            with pytest.raises(RuntimeFailure) as failure:
+                await service.create_session("question", reasoning_effort=value)
+            assert failure.value.code in {"reasoning_effort_unsupported", "invalid_request"}
+        assert fake.invocations == []
+        assert service.sessions == {}
+
+    asyncio.run(run())
+
+
+def test_no_effort_clients_keep_their_behavior(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+        settled = await service.wait((await service.create_session("question"))["id"])
+        assert fake.invocations[0].reasoning_effort is None
+        assert settled["requested_reasoning_effort"] is None
+        assert settled["effective_reasoning_effort"] is None
+
+    asyncio.run(run())
+
+
+def test_configured_default_effort_applies_without_a_request(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+        cast("dict[str, ModelProfile]", service.configuration.profiles)["reason"] = replace(
+            service.configuration.profiles["reason"],
+            default_reasoning_effort=ReasoningEffort.LOW,
+        )
+        settled = await service.wait((await service.create_session("question"))["id"])
+        assert fake.invocations[0].reasoning_effort is ReasoningEffort.LOW
+        assert settled["requested_reasoning_effort"] == "low"
+
+    asyncio.run(run())
+
+
+def test_each_turn_snapshots_its_own_effort(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+        created = await service.create_session("first", reasoning_effort="high")
+        await service.wait(created["id"])
+        await service.continue_session(created["id"], "second", "low")
+        second = await service.wait(created["id"])
+        assert [item.reasoning_effort for item in fake.invocations] == [
+            ReasoningEffort.HIGH,
+            ReasoningEffort.LOW,
+        ]
+        assert second["requested_reasoning_effort"] == "low"
+
+        # A follow-up without an override stays at the effort already in use.
+        await service.continue_session(created["id"], "third")
+        third = await service.wait(created["id"])
+        assert fake.invocations[2].reasoning_effort is ReasoningEffort.LOW
+        assert third["requested_reasoning_effort"] == "low"
+
+    asyncio.run(run())
+
+
+def test_concurrent_turns_keep_distinct_immutable_selections(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+        fake.delay_seconds = 0.05
+        high = await service.create_session("one", reasoning_effort="high")
+        low = await service.create_session("two", reasoning_effort="low")
+        # A later request cannot re-target work that is already in flight.
+        with pytest.raises(RuntimeFailure):
+            await service.continue_session(high["id"], "again", "low")
+        settled = [await service.wait(high["id"]), await service.wait(low["id"])]
+        assert [item["requested_reasoning_effort"] for item in settled] == ["high", "low"]
+        assert [item["effective_reasoning_effort"] for item in settled] == ["high", "low"]
+        assert {item.reasoning_effort for item in fake.invocations} == {
+            ReasoningEffort.HIGH,
+            ReasoningEffort.LOW,
+        }
+
+    asyncio.run(run())
+
+
+def test_gateway_carries_effort_and_discovery_without_provider_detail(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, _ = runtime(tmp_path)
+        gateway = create_app(service, bearer_token=TOKEN)
+        headers = {"Authorization": "Bearer " + TOKEN}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=gateway), base_url="http://127.0.0.1:8765"
+        ) as client:
+            catalog = await client.get("/v1/profiles?health=true&discovery=true", headers=headers)
+            assert catalog.status_code == 200
+            assert_schema("ProfilesResponse", catalog.json())
+            body = catalog.text
+            assert "credential" not in body and "endpoint" not in body and "command" not in body
+
+            assert (
+                await client.get("/v1/profiles?discovery=maybe", headers=headers)
+            ).status_code == 400
+
+            refused = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"prompt": "hello", "reasoning_effort": "max"},
+            )
+            assert refused.status_code == 400
+            assert refused.json()["error"]["code"] == "reasoning_effort_unsupported"
+
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"prompt": "hello", "reasoning_effort": "low"},
+            )
+            assert created.status_code == 200
+            session_id = created.json()["id"]
+            await service.wait(session_id)
+            follow_up = await client.post(
+                f"/v1/sessions/{session_id}/input",
+                headers=headers,
+                json={"prompt": "again", "reasoning_effort": "high"},
+            )
+            assert follow_up.status_code == 200
+            assert follow_up.json()["requested_reasoning_effort"] == "high"
+            assert_schema("SessionResponse", follow_up.json())
+
+    asyncio.run(run())
+
+
+def test_a_failing_probe_is_per_profile_state_not_a_catalog_outage(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+
+        fake.health_failure = RuntimeFailure("provider_unavailable", "down", status_code=503)
+        fake.discovery_hangs = True
+        service_module.PROBE_TIMEOUT_SECONDS = 0.05
+        try:
+            state = await service.profile_state(include_health=True, include_discovery=True)
+        finally:
+            service_module.PROBE_TIMEOUT_SECONDS = 20
+        entry = state["profiles"][0]
+        assert entry["health"]["status"] == "inconclusive"
+        assert entry["health"]["detail_code"] == "provider_unavailable"
+        assert entry["discovery"] == {
+            "supported": True,
+            "models": [],
+            "detail_code": "probe_timed_out",
+        }
+        assert_schema("ProfilesResponse", state)
+
+    asyncio.run(run())
+
+
+def test_the_plain_catalog_never_touches_a_provider(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+
+        fake.probes_forbidden = True
+        state = await service.profile_state()
+        assert state["profiles"][0]["reasoning"]["efforts"] == ["low", "high"]
+
+    asyncio.run(run())
+
+
+def test_probes_run_concurrently_and_share_one_discovery_per_connection(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        connection = ProviderConnection(
+            "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        )
+        profiles = {
+            name: ModelProfile(name, "local", name, False, True)
+            for name in ("first", "second", "third")
+        }
+        fake = FakeProvider(connection, profiles["first"])
+        fake.health_delay = 0.15
+        config = RuntimeConfiguration({"local": connection}, profiles, "first", {})
+        service = RuntimeService(
+            config, SelectionStore(tmp_path / "state"), provider_factory=lambda *_: fake
+        )
+        started = asyncio.get_running_loop().time()
+        state = await service.profile_state(include_health=True, include_discovery=True)
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert fake.health_calls == 3
+        # One connection enumerates once, however many profiles sit on it.
+        assert fake.discovery_calls == 1
+        assert elapsed < 0.45
+        assert all(
+            item["discovery"]["models"] == ["model", "other-model"] for item in state["profiles"]
+        )
 
     asyncio.run(run())

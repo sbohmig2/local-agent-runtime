@@ -1,4 +1,5 @@
 import type {
+  AdaptersResponse,
   EmbeddingProfilesResponse,
   EmbeddingRequest,
   EmbeddingResponse,
@@ -12,12 +13,87 @@ import type {
   ToolResultsRequest
 } from "../generated.js";
 
-export const RUNTIME_PACKAGE_VERSION = "0.1.3";
-export const RUNTIME_API_VERSION = "1.0.0";
+export const RUNTIME_PACKAGE_VERSION = "0.2.0";
+export const RUNTIME_API_VERSION = "1.1.0";
+
+/** Provider-neutral effort vocabulary. A profile publishes the subset it supports. */
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface ReasoningOptions {
+  /** Empty means this profile has no reasoning control; render no effort selector. */
+  efforts: readonly ReasoningEffort[];
+  default: ReasoningEffort | null;
+}
+
+export interface ModelDiscovery {
+  supported: boolean;
+  models: readonly string[];
+  detailCode: string | null;
+  loadedModels?: readonly string[] | null;
+}
+
+export interface PublicAdapterOption {
+  id: string;
+  profileId: string;
+  model: string;
+  enabled: boolean;
+  canEnable: boolean;
+  canDisable: boolean;
+  blockedReason: string | null;
+}
+
+export interface PublicAdapter {
+  id: "codex_cli" | "claude_cli" | "grok_cli" | "lmstudio" | "openrouter";
+  label: string;
+  processing: "local" | "external";
+  supported: true;
+  configured: boolean;
+  enabled: boolean;
+  profileIds: string[];
+  options: PublicAdapterOption[];
+  probe: {
+    state: "not_checked" | "checked" | "failed";
+    installed: boolean | null;
+    detailCode: string | null;
+    checkedAt: string | null;
+  };
+  discovery?: ModelDiscovery;
+}
+
+export interface PublicAdapterCatalog {
+  adapters: PublicAdapter[];
+}
+
+export function toPublicAdapterCatalog(value: AdaptersResponse): PublicAdapterCatalog {
+  return { adapters: value.adapters.map((item) => ({
+    id: item.id, label: item.label, processing: item.processing, supported: item.supported,
+    configured: item.configured, enabled: item.enabled, profileIds: [...item.profile_ids],
+    options: item.options.map((option) => ({
+      id: option.id, profileId: option.profile_id, model: option.model, enabled: option.enabled,
+      canEnable: option.can_enable, canDisable: option.can_disable, blockedReason: option.blocked_reason
+    })),
+    probe: { state: item.probe.state, installed: item.probe.installed,
+      detailCode: item.probe.detail_code, checkedAt: item.probe.checked_at },
+    ...(item.discovery === undefined ? {} : { discovery: {
+      supported: item.discovery.supported, models: [...item.discovery.models],
+      detailCode: item.discovery.detail_code,
+      loadedModels: item.discovery.loaded_models === undefined || item.discovery.loaded_models === null
+        ? null : [...item.discovery.loaded_models]
+    } })
+  })) };
+}
 
 export interface RuntimePort {
+  adapters?(probe?: boolean, signal?: AbortSignal): Promise<AdaptersResponse>;
+  setAdapterActivation?(
+    body: { option_id: string; enabled: boolean }, signal?: AbortSignal
+  ): Promise<AdaptersResponse>;
   health(signal?: AbortSignal): Promise<HealthResponse>;
-  profiles(includeHealth?: boolean, signal?: AbortSignal): Promise<ProfilesResponse>;
+  profiles(
+    includeHealth?: boolean,
+    signal?: AbortSignal,
+    includeDiscovery?: boolean
+  ): Promise<ProfilesResponse>;
   selectProfile(body: { profile_id: string }, signal?: AbortSignal): Promise<ProfilesResponse>;
   createSession(body: SessionRequest, signal?: AbortSignal): Promise<SessionResponse>;
   session(sessionId: string, signal?: AbortSignal): Promise<SessionResponse>;
@@ -34,7 +110,7 @@ export interface RuntimePort {
   ): Promise<SessionResponse>;
   continueSession(
     sessionId: string,
-    body: { prompt: string },
+    body: { prompt: string; reasoning_effort?: ReasoningEffort },
     signal?: AbortSignal
   ): Promise<SessionResponse>;
   cancelSession(sessionId: string, signal?: AbortSignal): Promise<SessionResponse>;
@@ -79,6 +155,10 @@ export interface PublicProfile {
   qualification: "qualified" | "unqualified";
   selected: boolean;
   capabilities: Record<string, boolean>;
+  /** Readiness (`health`), enumeration (`discovery`) and task fitness
+   * (`qualification`) are three independent axes; none implies another. */
+  reasoning: ReasoningOptions;
+  discovery?: ModelDiscovery;
   health?: {
     status: "available" | "unavailable" | "inconclusive";
     authenticated: boolean | null;
@@ -119,6 +199,8 @@ export interface HostSession {
   effectiveModel: string | null;
   effectiveUpstream: string | null;
   processing: "local" | "external";
+  requestedReasoningEffort: ReasoningEffort | null;
+  effectiveReasoningEffort: ReasoningEffort | null;
   status: HostSessionStatus;
   finalText: string | null;
   failureCode: string | null;
@@ -132,6 +214,11 @@ export interface StartSessionRequest {
   privateProcessing?: boolean;
   allowExternalProcessing?: boolean;
   outputSchema?: Record<string, unknown>;
+  reasoningEffort?: ReasoningEffort;
+}
+
+export interface ContinueSessionOptions {
+  reasoningEffort?: ReasoningEffort;
 }
 
 export type ToolDecision = "execute" | "approval";
@@ -162,8 +249,22 @@ export function toPublicProfile(profile: ReasoningProfile): PublicProfile {
     qualifiedTasks: [...profile.qualified_tasks],
     qualification: profile.qualification.status,
     selected: profile.selected,
-    capabilities: { ...profile.capabilities }
+    capabilities: { ...profile.capabilities },
+    reasoning: {
+      efforts: [...profile.reasoning.efforts],
+      default: profile.reasoning.default
+    }
   };
+  if (profile.discovery !== undefined) {
+    value.discovery = {
+      supported: profile.discovery.supported,
+      models: [...profile.discovery.models],
+      detailCode: profile.discovery.detail_code,
+      ...(profile.discovery.loaded_models === undefined ? {} : {
+        loadedModels: profile.discovery.loaded_models === null ? null : [...profile.discovery.loaded_models]
+      })
+    };
+  }
   if (profile.health !== undefined) {
     value.health = {
       status: profile.health.status,

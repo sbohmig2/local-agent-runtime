@@ -1,18 +1,33 @@
 """Claude CLI policy and native result wrapper; no provider branching elsewhere."""
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import ClassVar
 
 from local_agent_runtime.adapters.cli_base import CLIAdapterBase
 from local_agent_runtime.adapters.cli_environment import _provider_environment
 from local_agent_runtime.adapters.process import ProcessResult
-from local_agent_runtime.contracts import CompletionResult
+from local_agent_runtime.contracts import CompletionResult, ReasoningEffort
 from local_agent_runtime.errors import provider_unavailable
 
 
 class ClaudeAdapter(CLIAdapterBase):
+    # The CLI's own level list excludes `minimal`, so no profile may declare it.
+    TRANSPORT_EFFORTS: ClassVar[tuple[ReasoningEffort, ...]] = (
+        ReasoningEffort.LOW,
+        ReasoningEffort.MEDIUM,
+        ReasoningEffort.HIGH,
+        ReasoningEffort.XHIGH,
+        ReasoningEffort.MAX,
+    )
+    VERIFIED_EFFORTS: ClassVar[Mapping[str, tuple[ReasoningEffort, ...]]] = {}
+
     def environment(self, root: Path) -> dict[str, str]:
-        return _provider_environment("CLAUDE_CONFIG_DIR")
+        # The CLI resolves its stored login against the invoking account name, so a
+        # bare environment reports an authenticated install as logged out.  USER is
+        # an account label, never a credential.
+        return _provider_environment("CLAUDE_CONFIG_DIR", "USER")
 
     def auth_arguments(self, executable: str) -> list[str]:
         return [executable, "auth", "status", "--json"]
@@ -26,7 +41,9 @@ class ClaudeAdapter(CLIAdapterBase):
             pass
         return None
 
-    def arguments(self, executable: str, root: Path, schema: Path) -> list[str]:
+    def arguments(
+        self, executable: str, root: Path, schema: Path, effort: ReasoningEffort | None
+    ) -> list[str]:
         args = [
             executable,
             "--print",
@@ -49,6 +66,10 @@ class ClaudeAdapter(CLIAdapterBase):
         ]
         if self.profile.model != "default":
             args.extend(("--model", self.profile.model))
+        # The CLI warns and silently falls back on an unknown level, so the runtime
+        # rejects unsupported efforts before dispatch rather than after.
+        if effort is not None:
+            args.extend(("--effort", effort.value))
         return args
 
     def decode(self, raw: str) -> CompletionResult:

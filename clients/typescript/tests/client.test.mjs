@@ -78,3 +78,19 @@ test("stopping event consumption cancels the response stream", async () => {
   for await (const _event of client.streamEvents("session")) break;
   assert.equal(canceled, true);
 });
+
+test("adapter client keeps explicit probes separate from issued-option activation", async () => {
+  const observed = [];
+  const client = new RuntimeClient({baseUrl: "http://127.0.0.1:8765", bearerToken: "t".repeat(40),
+    fetch: async (url, init) => {
+      observed.push({url, init});
+      return Response.json({adapters: []});
+    }});
+  await client.adapters();
+  await client.adapters(true);
+  await client.setAdapterActivation({option_id: "claude-approved", enabled: true});
+  assert.equal(observed[0].url, "http://127.0.0.1:8765/v1/adapters?probe=false");
+  assert.equal(observed[1].url, "http://127.0.0.1:8765/v1/adapters?probe=true");
+  assert.equal(observed[2].url, "http://127.0.0.1:8765/v1/adapter-activation");
+  assert.deepEqual(JSON.parse(observed[2].init.body), {option_id: "claude-approved", enabled: true});
+});

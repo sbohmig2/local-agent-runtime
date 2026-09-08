@@ -5,17 +5,24 @@ export type ErrorDetail = { "code": string; "message": string };
 export type ErrorResponse = { "error": ErrorDetail };
 export type HealthResponse = { "status": "available"; "package_version": string; "api_version": string };
 export type ProviderHealth = { "status": "available" | "unavailable" | "inconclusive"; "authenticated": boolean | null; "installed": boolean | null; "compatible": boolean | null; "detail_code": string | null; "effective_model": string | null };
-export type Capabilities = { "text_generation": boolean; "structured_output": boolean; "tool_requests": boolean; "token_streaming": boolean; "conversation_continuation": boolean; "model_discovery": boolean; "token_limit_control": boolean };
-export type ReasoningProfile = { "id": string; "provider_id": string; "driver": string; "model": string; "configured": boolean; "processing": "local" | "external"; "allow_private_processing": boolean; "qualified_tasks": Array<string>; "qualification": { "status": "qualified" | "unqualified"; "tasks": Array<string> }; "selected": boolean; "capabilities": Capabilities; "health"?: ProviderHealth };
+export type Capabilities = { "text_generation": boolean; "structured_output": boolean; "tool_requests": boolean; "token_streaming": boolean; "conversation_continuation": boolean; "model_discovery": boolean; "token_limit_control": boolean; "reasoning_effort_control": boolean };
+export type ReasoningOptions = { "efforts": Array<"minimal" | "low" | "medium" | "high" | "xhigh" | "max">; "default": "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null };
+export type ModelDiscovery = { "supported": boolean; "models": Array<string>; "detail_code": string | null; "loaded_models"?: Array<string> | null };
+export type AdapterOption = { "id": string; "profile_id": string; "model": string; "enabled": boolean; "can_enable": boolean; "can_disable": boolean; "blocked_reason": string | null };
+export type AdapterProbe = { "state": "not_checked" | "checked" | "failed"; "installed": boolean | null; "detail_code": string | null; "checked_at": string | null };
+export type SupportedAdapter = { "id": "codex_cli" | "claude_cli" | "grok_cli" | "lmstudio" | "openrouter"; "label": string; "processing": "local" | "external"; "supported": true; "configured": boolean; "enabled": boolean; "profile_ids": Array<string>; "options": Array<AdapterOption>; "probe": AdapterProbe; "discovery"?: ModelDiscovery };
+export type AdaptersResponse = { "adapters": Array<SupportedAdapter> };
+export type AdapterActivationRequest = { "option_id": string; "enabled": boolean };
+export type ReasoningProfile = { "id": string; "provider_id": string; "driver": string; "model": string; "configured": boolean; "processing": "local" | "external"; "allow_private_processing": boolean; "qualified_tasks": Array<string>; "qualification": { "status": "qualified" | "unqualified"; "tasks": Array<string> }; "selected": boolean; "capabilities": Capabilities; "reasoning": ReasoningOptions; "health"?: ProviderHealth; "discovery"?: ModelDiscovery };
 export type ProfilesResponse = { "selected_profile": string; "profiles": Array<ReasoningProfile> };
 export type SelectionRequest = { "profile_id": string };
 export type ToolDefinition = { "name": string; "description": string; "input_schema": Record<string, unknown> };
 export type ToolRequest = { "id": string; "name": string; "arguments": Record<string, unknown> };
 export type ToolResult = { "request_id": string; "name": string; "output": unknown; "is_error": boolean };
 export type ToolResultsRequest = { "results": Array<ToolResult> };
-export type SessionRequest = { "prompt": string; "instructions"?: string; "profile_id"?: string; "task_code"?: string; "private_processing"?: boolean; "allow_external_processing"?: boolean; "tools"?: Array<ToolDefinition>; "output_schema"?: Record<string, unknown> };
-export type InputRequest = { "prompt": string };
-export type SessionResponse = { "id": string; "profile_id": string; "provider_id": string; "adapter": string; "requested_model": string; "created_at": string; "updated_at": string; "finished_at": string | null; "processing": "local" | "external"; "task_code": string | null; "status": "created" | "running" | "waiting_for_tool" | "completed" | "failed" | "canceled"; "pending_tools": Array<ToolRequest>; "tool_rounds": number; "final_text": string | null; "failure": ErrorDetail | null; "effective_model": string | null; "effective_upstream": string | null; "usage": Record<string, number>; "limits": ReasoningLimits; "validation": "pending" | "passed" | "failed" | "not_validated"; "event_count": number };
+export type SessionRequest = { "prompt": string; "instructions"?: string; "profile_id"?: string; "task_code"?: string; "private_processing"?: boolean; "allow_external_processing"?: boolean; "tools"?: Array<ToolDefinition>; "output_schema"?: Record<string, unknown>; "reasoning_effort"?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" };
+export type InputRequest = { "prompt": string; "reasoning_effort"?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" };
+export type SessionResponse = { "id": string; "profile_id": string; "provider_id": string; "adapter": string; "requested_model": string; "created_at": string; "updated_at": string; "finished_at": string | null; "processing": "local" | "external"; "task_code": string | null; "status": "created" | "running" | "waiting_for_tool" | "completed" | "failed" | "canceled"; "pending_tools": Array<ToolRequest>; "tool_rounds": number; "final_text": string | null; "failure": ErrorDetail | null; "effective_model": string | null; "effective_upstream": string | null; "requested_reasoning_effort": "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null; "effective_reasoning_effort": "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null; "usage": Record<string, number>; "limits": ReasoningLimits; "validation": "pending" | "passed" | "failed" | "not_validated"; "event_count": number };
 export type SessionEvent = { "sequence": number; "type": string; "occurred_at": string; "payload": Record<string, unknown> };
 export type EventsResponse = { "events": Array<SessionEvent> };
 export type EmbeddingLimits = { "batch_size": number; "max_input_chars": number; "max_batch_chars": number; "timeout_seconds": number; "max_response_bytes": number };
@@ -29,8 +36,14 @@ export class RuntimeClient extends RuntimeTransport {
   health(signal?: AbortSignal): Promise<HealthResponse> {
     return this.request<HealthResponse>("/v1/health", "GET", undefined, signal);
   }
-  profiles(includeHealth = false, signal?: AbortSignal): Promise<ProfilesResponse> {
-    return this.request<ProfilesResponse>("/v1/profiles" + "?health=" + String(includeHealth), "GET", undefined, signal);
+  profiles(includeHealth = false, signal?: AbortSignal, includeDiscovery = false): Promise<ProfilesResponse> {
+    return this.request<ProfilesResponse>("/v1/profiles" + "?health=" + String(includeHealth) + "&discovery=" + String(includeDiscovery), "GET", undefined, signal);
+  }
+  adapters(probe = false, signal?: AbortSignal): Promise<AdaptersResponse> {
+    return this.request<AdaptersResponse>("/v1/adapters" + "?probe=" + String(probe), "GET", undefined, signal);
+  }
+  setAdapterActivation(body: AdapterActivationRequest, signal?: AbortSignal): Promise<AdaptersResponse> {
+    return this.request<AdaptersResponse>("/v1/adapter-activation", "POST", body, signal);
   }
   selectProfile(body: SelectionRequest, signal?: AbortSignal): Promise<ProfilesResponse> {
     return this.request<ProfilesResponse>("/v1/selection", "POST", body, signal);

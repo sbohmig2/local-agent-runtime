@@ -88,8 +88,8 @@ def release_version() -> str:
     }
     if any(value != python_version for value in versions.values()):
         raise ReleaseError(f"Release version mismatch: {versions}")
-    if API_VERSION != "1.0.0":
-        raise ReleaseError("The initial release requires gateway API version 1.0.0")
+    if not re.fullmatch(r"1\.\d+\.\d+", API_VERSION):
+        raise ReleaseError("This release line requires a gateway API version in the 1.x series")
     if contract.get("info", {}).get("version") != API_VERSION:
         raise ReleaseError("Committed OpenAPI version does not match the runtime API version")
     return python_version

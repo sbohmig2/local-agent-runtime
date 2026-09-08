@@ -1,6 +1,114 @@
 {
   "components": {
     "schemas": {
+      "AdapterActivationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "option_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "option_id",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "AdapterOption": {
+        "additionalProperties": false,
+        "properties": {
+          "blocked_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "can_disable": {
+            "type": "boolean"
+          },
+          "can_enable": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "profile_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "profile_id",
+          "model",
+          "enabled",
+          "can_enable",
+          "can_disable",
+          "blocked_reason"
+        ],
+        "type": "object"
+      },
+      "AdapterProbe": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "installed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "state": {
+            "enum": [
+              "not_checked",
+              "checked",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "installed",
+          "detail_code",
+          "checked_at"
+        ],
+        "type": "object"
+      },
+      "AdaptersResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "adapters": {
+            "items": {
+              "$ref": "#/components/schemas/SupportedAdapter"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "adapters"
+        ],
+        "type": "object"
+      },
       "Capabilities": {
         "additionalProperties": false,
         "properties": {
@@ -8,6 +116,9 @@
             "type": "boolean"
           },
           "model_discovery": {
+            "type": "boolean"
+          },
+          "reasoning_effort_control": {
             "type": "boolean"
           },
           "structured_output": {
@@ -33,7 +144,8 @@
           "token_streaming",
           "conversation_continuation",
           "model_discovery",
-          "token_limit_control"
+          "token_limit_control",
+          "reasoning_effort_control"
         ],
         "type": "object"
       },
@@ -366,10 +478,60 @@
         "properties": {
           "prompt": {
             "type": "string"
+          },
+          "reasoning_effort": {
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "type": "string"
           }
         },
         "required": [
           "prompt"
+        ],
+        "type": "object"
+      },
+      "ModelDiscovery": {
+        "additionalProperties": false,
+        "properties": {
+          "detail_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "loaded_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "supported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported",
+          "models",
+          "detail_code"
         ],
         "type": "object"
       },
@@ -472,6 +634,48 @@
         ],
         "type": "object"
       },
+      "ReasoningOptions": {
+        "additionalProperties": false,
+        "properties": {
+          "default": {
+            "anyOf": [
+              {
+                "enum": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "efforts": {
+            "items": {
+              "enum": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "efforts",
+          "default"
+        ],
+        "type": "object"
+      },
       "ReasoningProfile": {
         "additionalProperties": false,
         "properties": {
@@ -483,6 +687,9 @@
           },
           "configured": {
             "type": "boolean"
+          },
+          "discovery": {
+            "$ref": "#/components/schemas/ModelDiscovery"
           },
           "driver": {
             "type": "string"
@@ -535,6 +742,9 @@
             },
             "type": "array"
           },
+          "reasoning": {
+            "$ref": "#/components/schemas/ReasoningOptions"
+          },
           "selected": {
             "type": "boolean"
           }
@@ -550,7 +760,8 @@
           "qualified_tasks",
           "qualification",
           "selected",
-          "capabilities"
+          "capabilities",
+          "reasoning"
         ],
         "type": "object"
       },
@@ -613,6 +824,17 @@
           "prompt": {
             "type": "string"
           },
+          "reasoning_effort": {
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "type": "string"
+          },
           "task_code": {
             "type": "string"
           },
@@ -641,6 +863,24 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "effective_reasoning_effort": {
+            "anyOf": [
+              {
+                "enum": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "effective_upstream": {
@@ -702,6 +942,24 @@
           "requested_model": {
             "type": "string"
           },
+          "requested_reasoning_effort": {
+            "anyOf": [
+              {
+                "enum": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "enum": [
               "created",
@@ -759,10 +1017,77 @@
           "failure",
           "effective_model",
           "effective_upstream",
+          "requested_reasoning_effort",
+          "effective_reasoning_effort",
           "usage",
           "limits",
           "validation",
           "event_count"
+        ],
+        "type": "object"
+      },
+      "SupportedAdapter": {
+        "additionalProperties": false,
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "discovery": {
+            "$ref": "#/components/schemas/ModelDiscovery"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "enum": [
+              "codex_cli",
+              "claude_cli",
+              "grok_cli",
+              "lmstudio",
+              "openrouter"
+            ],
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AdapterOption"
+            },
+            "type": "array"
+          },
+          "probe": {
+            "$ref": "#/components/schemas/AdapterProbe"
+          },
+          "processing": {
+            "enum": [
+              "local",
+              "external"
+            ],
+            "type": "string"
+          },
+          "profile_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "supported": {
+            "const": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "processing",
+          "supported",
+          "configured",
+          "enabled",
+          "profile_ids",
+          "options",
+          "probe"
         ],
         "type": "object"
       },
@@ -855,10 +1180,83 @@
   },
   "info": {
     "title": "Local Agent Runtime",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/adapter-activation": {
+      "post": {
+        "operationId": "setAdapterActivation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterActivationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdaptersResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/adapters": {
+      "get": {
+        "operationId": "adapters",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "probe",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdaptersResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
     "/v1/embedding-profiles": {
       "get": {
         "operationId": "embeddingProfiles",
@@ -957,6 +1355,13 @@
           {
             "in": "query",
             "name": "health",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "discovery",
             "schema": {
               "type": "boolean"
             }

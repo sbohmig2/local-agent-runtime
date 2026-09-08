@@ -53,6 +53,56 @@ const runtime = new RuntimeClient({
 const profiles = await runtime.profiles(false);
 ```
 
+## Model selection and reasoning effort
+
+A consumer renders a model selector from the configured profiles the catalog
+returns and a separate effort selector from each profile's `reasoning.efforts`.
+Both are provider-neutral: no consumer should carry provider names, CLI flags or
+effort lists of its own, and an empty `efforts` list means that profile has no
+effort control and no selector should appear.
+
+```ts
+const { profiles } = await agent.profiles(true, true); // health, discovery
+const profile = profiles.find((item) => item.selected)!;
+const session = await agent.start({
+  prompt,
+  profileId: profile.id,
+  ...(profile.reasoning.default === null
+    ? {}
+    : { reasoningEffort: profile.reasoning.default })
+});
+```
+
+Three catalog axes stay independent and none implies another: `health` reports
+readiness, `discovery` reports whether the route can enumerate models and which
+ones, and `qualification` reports operator-asserted task fitness. Model choice
+remains an operator-owned configured connection; nothing in these contracts lets
+a browser edit an executable, endpoint or credential.
+
+Each turn carries its own effort. `start` and `continue` snapshot the requested
+value and work already in flight is never re-targeted. A `continue` without an
+override stays at the effort already in use, so a follow-up never silently drops
+back to the profile default; pass an explicit effort to change it, or start a new
+session. An effort a profile does not support fails with
+`reasoning_effort_unsupported` before the provider is reached, and callers that
+send no effort keep their previous behavior.
+
+`requestedReasoningEffort` is what the runtime forwarded, including a configured
+default it resolved on the caller's behalf. `effectiveReasoningEffort` is
+provider-reported provenance and is null on every route installed today, because
+none of them reports the level it applied. Do not read null as "no effort was
+used"; compare against `requestedReasoningEffort` instead.
+
+A catalog request without flags touches no provider and is safe to call on every
+page load. Health and discovery are opt-in, run concurrently under individual
+timeouts, and a probe that fails becomes that one profile's inconclusive state
+with a detail code rather than an error for the whole catalog. Load the cheap
+list first and refresh readiness separately.
+
+`RuntimeClient.profiles` keeps its original `(includeHealth?, signal?)` shape;
+discovery is a third optional argument, so existing cancellation callers are
+unaffected.
+
 The host toolkit is assembled by backend composition code. Product instructions,
 processing policy, tool authorization, MCP server specifications, structured
 output schemas, and HTTP route choice are injected by the consumer. An
@@ -152,3 +202,29 @@ profiles, task routes, policy flags, and secret references. Configuration and
 credentials are not packaged into release artifacts. Chat selection and
 embedding profile choice are independent. Products store the embedding profile
 fingerprint with each index generation and supply it on query calls.
+
+## Managed runtime activation
+
+For a consumer's Add runtimes screen, use `SessionCoordinator.adapters(probe)`.
+The default is a passive five-adapter catalog; request `probe=true` explicitly
+to check installation or loopback availability. Existing `profiles` remains the
+enabled-model selector and owns per-profile health and reasoning controls.
+
+An operator can declare existing complete profiles as consumer-managed options:
+
+```yaml
+activation_policy:
+  managed_profiles:
+    codex-default: true
+    claude-default: false
+```
+
+Use IDs that exist in that deployment's `profiles`. The configured default and
+task routes must initially be enabled. Undeclared profiles keep existing behavior.
+`SessionCoordinator.setAdapterActivation(optionId, enabled)` activates only these
+issued options and persists private local state. An enabled profile may still
+need installation/login or be unqualified for a consumer task. No runtime probe
+authenticates the browser, changes provider login, or approves consumer data
+egress. The [adapter contract](./architecture/provider-adapters.md) defines the
+policy and retention guards. No key, executable, endpoint, model, upstream, or
+qualification field is accepted from a browser.

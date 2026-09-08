@@ -6,11 +6,13 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import pytest
 
-from local_agent_runtime.adapters.process import ProcessResult, run_process
+from local_agent_runtime.adapters.cli_base import CLIAdapterBase
+from local_agent_runtime.adapters.process import ProcessResult, ProcessRunner, run_process
 from local_agent_runtime.adapters.providers.claude import ClaudeAdapter
 from local_agent_runtime.adapters.providers.codex import CodexAdapter
 from local_agent_runtime.adapters.providers.grok import GrokAdapter
@@ -21,9 +23,12 @@ from local_agent_runtime.contracts import (
     Invocation,
     Limits,
     Message,
+    ModelDiscovery,
     ModelProfile,
     ProcessingClass,
     ProviderConnection,
+    ReasoningEffort,
+    ToolDefinition,
 )
 from local_agent_runtime.errors import RuntimeFailure
 
@@ -89,11 +94,24 @@ def test_cli_contract_and_isolation(
         payload: object = {"content": "answer", "tool_calls": []}
         if driver == "claude_cli":
             payload = {"structured_output": payload, "is_error": False}
+        if driver == "grok_cli":
+            payload = {
+                "text": json.dumps(payload),
+                "stopReason": "end_turn",
+                "structuredOutput": payload,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
         return ProcessResult(0, json.dumps(payload), "")
 
     profile = ModelProfile("test", "provider", "exact-model", True, False)
     connection = ProviderConnection("provider", driver, ProcessingClass.EXTERNAL, command=command)
-    adapter = adapter_type(connection, profile, runner, lambda _: "/trusted/" + command)
+    adapter = adapter_type(
+        connection,
+        profile,
+        runner,
+        lambda _: "/trusted/" + command,
+        lambda path: path + "-concrete",
+    )
     result = asyncio.run(
         adapter.complete(Invocation((Message("user", "prompt-canary"),), (), Limits()))
     )
@@ -101,6 +119,8 @@ def test_cli_contract_and_isolation(
     assert result.effective_model is None  # Never fabricate provider confirmation.
     args, root = observed[0]
     assert not root.exists()
+    # The installation binary is launched, never the launcher symlink spelling.
+    assert args[0] == "/trusted/" + command + "-concrete"
     assert args[args.index("--model") + 1] == "exact-model"
     if driver == "codex_cli":
         assert "--ignore-user-config" in args
@@ -237,7 +257,13 @@ def test_signed_out_cli_is_installed_but_unauthenticated(tmp_path: Path) -> None
     )
     profile = ModelProfile("profile", "provider", "default", True, False)
     health = asyncio.run(
-        CodexAdapter(connection, profile, runner=runner, which=lambda _: "/trusted/codex").health()
+        CodexAdapter(
+            connection,
+            profile,
+            runner=runner,
+            which=lambda _: "/trusted/codex",
+            resolve=lambda path: path,
+        ).health()
     )
     assert health.status is HealthStatus.UNAVAILABLE
     assert health.installed is True
@@ -275,7 +301,11 @@ def test_claude_health_distinguishes_authentication_states(
     profile = ModelProfile("profile", "provider", "default", True, False)
     health = asyncio.run(
         ClaudeAdapter(
-            connection, profile, runner=runner, which=lambda _: "/trusted/claude"
+            connection,
+            profile,
+            runner=runner,
+            which=lambda _: "/trusted/claude",
+            resolve=lambda path: path,
         ).health()
     )
     assert health.status is expected_status
@@ -301,7 +331,13 @@ def test_grok_health_is_explicitly_inconclusive_when_executable_is_present() -> 
     )
     profile = ModelProfile("profile", "provider", "default", True, False)
     health = asyncio.run(
-        GrokAdapter(connection, profile, runner=runner, which=lambda _: "/trusted/grok").health()
+        GrokAdapter(
+            connection,
+            profile,
+            runner=runner,
+            which=lambda _: "/trusted/grok",
+            resolve=lambda path: path,
+        ).health()
     )
     assert health.status is HealthStatus.INCONCLUSIVE
     assert health.installed is True
@@ -449,3 +485,608 @@ def test_openrouter_identity_and_malformed_fail_explicitly(
     with pytest.raises(RuntimeFailure) as caught:
         asyncio.run(adapter.complete(Invocation((Message("user", "hello"),), (), Limits())))
     assert caught.value.code == code
+
+
+CLI_ADAPTERS: dict[str, tuple[type[CLIAdapterBase], str]] = {
+    "codex_cli": (CodexAdapter, "codex"),
+    "claude_cli": (ClaudeAdapter, "claude"),
+    "grok_cli": (GrokAdapter, "grok"),
+}
+
+
+def cli_adapter(
+    driver: str,
+    runner: ProcessRunner,
+    *,
+    efforts: tuple[ReasoningEffort, ...] = (),
+    default: ReasoningEffort | None = None,
+    model: str = "exact-model",
+) -> CLIAdapterBase:
+    adapter_type, command = CLI_ADAPTERS[driver]
+    profile = ModelProfile(
+        "test",
+        "provider",
+        model,
+        True,
+        False,
+        reasoning_efforts=efforts,
+        default_reasoning_effort=default,
+    )
+    connection = ProviderConnection("provider", driver, ProcessingClass.EXTERNAL, command=command)
+    return adapter_type(
+        connection, profile, runner, lambda _: "/trusted/" + command, lambda path: path
+    )
+
+
+def native_payload(driver: str) -> str:
+    payload: object = {"content": "answer", "tool_calls": []}
+    if driver == "claude_cli":
+        payload = {"structured_output": payload, "is_error": False}
+    if driver == "grok_cli":
+        payload = {"text": "ignored", "stopReason": "end_turn", "structuredOutput": payload}
+    return json.dumps(payload)
+
+
+@pytest.mark.parametrize(
+    "driver,flag,expected",
+    [
+        ("codex_cli", "--config", 'model_reasoning_effort="high"'),
+        ("claude_cli", "--effort", "high"),
+        ("grok_cli", "--reasoning-effort", "high"),
+    ],
+)
+def test_supported_effort_reaches_the_cli_and_is_reported(
+    driver: str, flag: str, expected: str
+) -> None:
+    observed: list[list[str]] = []
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        if "sessions" in args:
+            return ProcessResult(0, "", "")
+        observed.append(list(args))
+        return ProcessResult(0, native_payload(driver), "")
+
+    adapter = cli_adapter(driver, runner, efforts=(ReasoningEffort.HIGH,))
+    result = asyncio.run(
+        adapter.complete(
+            Invocation((Message("user", "prompt"),), (), Limits(), None, ReasoningEffort.HIGH)
+        )
+    )
+    # Forwarding an effort is a request; no CLI reports the level it applied.
+    assert result.effective_reasoning_effort is None
+    args = observed[0]
+    assert expected in args[args.index(flag) + 1 :] or args[args.index(flag) + 1] == expected
+    if driver == "codex_cli":
+        # The trailing stdin marker must stay last after the effort override.
+        assert args[-1] == "-"
+
+
+@pytest.mark.parametrize("driver", sorted(CLI_ADAPTERS))
+def test_unsupported_effort_never_starts_a_cli_process(driver: str) -> None:
+    async def runner(*_args: object) -> ProcessResult:
+        raise AssertionError("The provider must not be started")
+
+    adapter = cli_adapter(driver, cast("ProcessRunner", runner), efforts=(ReasoningEffort.LOW,))
+    assert adapter.reasoning_efforts == (ReasoningEffort.LOW,)
+    with pytest.raises(RuntimeFailure) as failure:
+        asyncio.run(
+            adapter.complete(
+                Invocation((Message("user", "prompt"),), (), Limits(), None, ReasoningEffort.MAX)
+            )
+        )
+    assert failure.value.code == "reasoning_effort_unsupported"
+
+
+@pytest.mark.parametrize(
+    "driver,undeliverable",
+    [
+        # Each CLI's own level list, not the runtime vocabulary, bounds a profile.
+        ("claude_cli", ReasoningEffort.MINIMAL),
+        ("grok_cli", ReasoningEffort.MAX),
+    ],
+)
+def test_a_profile_cannot_declare_a_level_its_route_cannot_send(
+    driver: str, undeliverable: ReasoningEffort
+) -> None:
+    async def runner(*_args: object) -> ProcessResult:
+        raise AssertionError("The provider must not be started")
+
+    adapter = cli_adapter(driver, cast("ProcessRunner", runner), efforts=(undeliverable,))
+    assert undeliverable not in adapter.TRANSPORT_EFFORTS
+    with pytest.raises(RuntimeFailure) as failure:
+        assert adapter.reasoning_efforts
+    assert failure.value.code == "invalid_configuration"
+
+
+@pytest.mark.parametrize("driver", sorted(CLI_ADAPTERS))
+def test_an_unqualified_model_inherits_no_effort_options(driver: str) -> None:
+    async def runner(*_args: object) -> ProcessResult:
+        raise AssertionError("Discovery must not start a process")
+
+    # A CLI accepting a level is not evidence that a given model supports it, and
+    # an alias such as `default` names no exact model at all.
+    for model in ("default", "some-unqualified-model"):
+        adapter = cli_adapter(driver, cast("ProcessRunner", runner), model=model)
+        assert adapter.VERIFIED_EFFORTS == {}
+        assert adapter.reasoning_efforts == ()
+        assert adapter.capabilities.reasoning_effort_control is False
+        assert adapter.capabilities.model_discovery is False
+        discovery = asyncio.run(adapter.discover_models())
+        assert discovery.supported is False and discovery.models == ()
+
+    declared = cli_adapter(
+        driver,
+        cast("ProcessRunner", runner),
+        model="a-model-the-operator-knows",
+        efforts=(ReasoningEffort.HIGH,),
+    )
+    assert declared.reasoning_efforts == (ReasoningEffort.HIGH,)
+    assert declared.capabilities.reasoning_effort_control is True
+
+
+def test_grok_unwraps_its_native_session_envelope() -> None:
+    payloads = [
+        json.dumps({"text": '{"content":"from text","tool_calls":[]}', "stopReason": "end_turn"}),
+        json.dumps(
+            {
+                "text": "unused",
+                "stopReason": "end_turn",
+                "structuredOutput": {"content": "structured", "tool_calls": []},
+                "usage": {"input_tokens": 3},
+            }
+        ),
+    ]
+    expected = ["from text", "structured"]
+    for raw, text in zip(payloads, expected, strict=True):
+
+        async def runner(
+            args: Sequence[str],
+            stdin: str | None,
+            cwd: Path,
+            environment: Mapping[str, str],
+            timeout: float,
+            raw: str = raw,
+        ) -> ProcessResult:
+            return ProcessResult(0, "" if "sessions" in args else raw, "")
+
+        adapter = cli_adapter("grok_cli", runner)
+        result = asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits())))
+        assert result.text == text
+
+
+@pytest.mark.parametrize(
+    "raw,code",
+    [
+        ('{"content":"bare","tool_calls":[]}', "provider_unavailable"),
+        ('{"text":"x","stopReason":"refusal"}', "provider_incomplete"),
+        ('{"structuredOutput":[]}', "provider_unavailable"),
+        ("not json", "provider_unavailable"),
+    ],
+)
+def test_grok_refuses_malformed_or_incomplete_native_output(raw: str, code: str) -> None:
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        return ProcessResult(0, "" if "sessions" in args else raw, "")
+
+    adapter = cli_adapter("grok_cli", runner)
+    with pytest.raises(RuntimeFailure) as failure:
+        asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits())))
+    assert failure.value.code == code
+
+
+def test_codex_declines_third_party_instruction_files_inside_its_sandbox() -> None:
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        # Loading AGENTS.md re-executes Codex through its filesystem sandbox
+        # helper, which the deny-root policy cannot permit; refusing the load
+        # keeps the sandbox intact and drops an untrusted instruction source.
+        assert "--config" in args and "project_doc_max_bytes=0" in args
+        assert any('":root"="deny"' in item for item in args)
+        assert not any("dangerously" in item for item in args)
+        assert not any("--add-dir" in item or "disk-full-read-access" in item for item in args)
+        return ProcessResult(0, native_payload("codex_cli"), "")
+
+    adapter = cli_adapter("codex_cli", runner)
+    assert (
+        asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits()))).text
+        == "answer"
+    )
+
+
+def test_claude_receives_its_account_context_but_no_unrelated_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USER", "account-label")
+    monkeypatch.setenv("UNRELATED_SECRET", "secret-canary")
+    monkeypatch.setenv("XAI_API_KEY", "other-vendor-canary")
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        # The CLI resolves its stored login against the account name; without it
+        # an authenticated install reports itself as logged out.
+        assert environment["USER"] == "account-label"
+        assert "UNRELATED_SECRET" not in environment and "XAI_API_KEY" not in environment
+        return ProcessResult(0, native_payload("claude_cli"), "")
+
+    adapter = cli_adapter("claude_cli", runner)
+    assert (
+        asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits()))).text
+        == "answer"
+    )
+
+
+def test_lmstudio_discovers_models_and_only_claims_declared_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(
+                200, json={"data": [{"id": "local-model"}, {"id": "other"}, {"bad": 1}]}
+            )
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": body["model"],
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": body.get("reasoning_effort", "absent")},
+                    }
+                ],
+            },
+        )
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    connection = ProviderConnection(
+        "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+    )
+    silent = ModelProfile("silent", "local", "local-model", False, False)
+    adapter = LMStudioAdapter(connection, silent, factory)
+    # Per-model support is not observable from the endpoint, so nothing is claimed.
+    assert adapter.VERIFIED_EFFORTS == {}
+    assert adapter.reasoning_efforts == ()
+    assert adapter.capabilities.reasoning_effort_control is False
+    assert adapter.capabilities.model_discovery is True
+    discovery = asyncio.run(adapter.discover_models())
+    assert discovery == ModelDiscovery(True, ("local-model", "other"), None)
+    with pytest.raises(RuntimeFailure) as failure:
+        asyncio.run(
+            adapter.complete(
+                Invocation((Message("user", "p"),), (), Limits(), None, ReasoningEffort.LOW)
+            )
+        )
+    assert failure.value.code == "reasoning_effort_unsupported"
+
+    declared = ModelProfile(
+        "declared",
+        "local",
+        "local-model",
+        False,
+        False,
+        reasoning_efforts=(ReasoningEffort.LOW, ReasoningEffort.HIGH),
+    )
+    adapter = LMStudioAdapter(connection, declared, factory)
+    assert adapter.reasoning_efforts == (ReasoningEffort.LOW, ReasoningEffort.HIGH)
+    result = asyncio.run(
+        adapter.complete(
+            Invocation((Message("user", "p"),), (), Limits(), None, ReasoningEffort.HIGH)
+        )
+    )
+    assert result.text == "high"
+    # The endpoint does not report the applied level, so it is not claimed.
+    assert result.effective_reasoning_effort is None
+
+    beyond = ModelProfile(
+        "beyond", "local", "local-model", False, False, reasoning_efforts=(ReasoningEffort.MAX,)
+    )
+    with pytest.raises(RuntimeFailure) as failure:
+        assert LMStudioAdapter(connection, beyond, factory).reasoning_efforts
+    assert failure.value.code == "invalid_configuration"
+
+
+def test_openrouter_stays_out_of_reasoning_and_discovery_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LAR_TEST_KEY", "test-token")
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, json={}))
+        )
+
+    connection = ProviderConnection(
+        "hosted",
+        "openrouter",
+        ProcessingClass.EXTERNAL,
+        endpoint="https://openrouter.ai/api/v1",
+        credential_ref="env://LAR_TEST_KEY",
+        upstream="anthropic",
+    )
+    adapter = OpenRouterAdapter(
+        connection, ModelProfile("hosted", "hosted", "a/model", True, False), factory
+    )
+    assert adapter.reasoning_efforts == ()
+    assert adapter.capabilities.reasoning_effort_control is False
+    assert asyncio.run(adapter.discover_models()).supported is False
+    with pytest.raises(RuntimeFailure) as failure:
+        asyncio.run(
+            adapter.complete(
+                Invocation((Message("user", "p"),), (), Limits(), None, ReasoningEffort.HIGH)
+            )
+        )
+    assert failure.value.code == "reasoning_effort_unsupported"
+
+    declared = ModelProfile(
+        "declared",
+        "hosted",
+        "a/model",
+        True,
+        False,
+        reasoning_efforts=(ReasoningEffort.LOW,),
+    )
+    with pytest.raises(RuntimeFailure) as failure:
+        assert OpenRouterAdapter(connection, declared, factory).reasoning_efforts
+    assert failure.value.code == "invalid_configuration"
+
+    defaulted = ModelProfile(
+        "defaulted",
+        "hosted",
+        "a/model",
+        True,
+        False,
+        default_reasoning_effort=ReasoningEffort.LOW,
+    )
+    with pytest.raises(RuntimeFailure) as failure:
+        assert OpenRouterAdapter(connection, defaulted, factory).reasoning_efforts
+    assert failure.value.code == "invalid_configuration"
+
+
+@pytest.mark.parametrize(
+    "payload,code",
+    [
+        ({"text": "x", "stopReason": "end_turn", "is_error": True}, "provider_failure"),
+        ({"text": "x", "stopReason": "end_turn", "isError": True}, "provider_failure"),
+        ({"text": "x", "stopReason": "end_turn", "error": "refused"}, "provider_failure"),
+        # A parsable payload does not make an early stop a completion.
+        (
+            {
+                "stopReason": "max_turns",
+                "structuredOutput": {"content": "partial", "tool_calls": []},
+            },
+            "provider_incomplete",
+        ),
+        (
+            {
+                "stopReason": "length",
+                "structuredOutput": {"content": "partial", "tool_calls": []},
+            },
+            "provider_incomplete",
+        ),
+        (
+            {
+                "stopReason": "interrupted",
+                "structuredOutput": {"content": "partial", "tool_calls": []},
+            },
+            "provider_incomplete",
+        ),
+        (
+            {"stopReason": 7, "structuredOutput": {"content": "x", "tool_calls": []}},
+            "provider_incomplete",
+        ),
+    ],
+)
+def test_grok_refuses_failed_or_early_stopped_turns(payload: dict[str, object], code: str) -> None:
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        return ProcessResult(0, "" if "sessions" in args else json.dumps(payload), "")
+
+    adapter = cli_adapter("grok_cli", runner)
+    with pytest.raises(RuntimeFailure) as failure:
+        asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits())))
+    assert failure.value.code == code
+
+
+@pytest.mark.parametrize(
+    "model_usage,expected",
+    [
+        ({"grok-4.6-build": {"inputTokens": 1}}, "grok-4.6-build"),
+        # Helper models make the primary identity ambiguous, so nothing is claimed.
+        ({"grok-4.6-build": {}, "grok-helper": {}}, None),
+        ({}, None),
+        ("not-a-mapping", None),
+    ],
+)
+def test_grok_only_reports_an_unambiguous_effective_model(
+    model_usage: object, expected: str | None
+) -> None:
+    payload = {
+        "stopReason": "end_turn",
+        "structuredOutput": {"content": "answer", "tool_calls": []},
+        "usage": {"input_tokens": 3, "output_tokens": 2},
+        "modelUsage": model_usage,
+    }
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        return ProcessResult(0, "" if "sessions" in args else json.dumps(payload), "")
+
+    result = asyncio.run(
+        cli_adapter("grok_cli", runner).complete(Invocation((Message("user", "p"),), (), Limits()))
+    )
+    assert result.effective_model == expected
+    assert result.usage == {"input_tokens": 3, "output_tokens": 2}
+
+
+@pytest.mark.parametrize("driver", sorted(CLI_ADAPTERS))
+def test_an_oversized_native_wrapper_is_refused_before_it_is_parsed(
+    driver: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parsed: list[str] = []
+    payload = {
+        "content": "answer",
+        "tool_calls": [],
+        "structured_output": {"content": "answer", "tool_calls": []},
+        "structuredOutput": {"content": "answer", "tool_calls": []},
+        "stopReason": "end_turn",
+        # Wrapper-only fields never reach the envelope, so they must be bounded here.
+        "thought": "t" * 20_000,
+    }
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        return ProcessResult(0, "" if "sessions" in args else json.dumps(payload), "")
+
+    adapter = cli_adapter(driver, runner)
+    monkeypatch.setattr(type(adapter), "decode", lambda self, raw: parsed.append(raw), raising=True)
+    limits = Limits(max_output_chars=1_000)
+    with pytest.raises(RuntimeFailure) as failure:
+        asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), limits)))
+    assert failure.value.code == "output_limit_exceeded"
+    assert parsed == []
+
+
+def test_the_envelope_schema_names_the_exact_catalog_tools() -> None:
+    schemas: list[dict[str, Any]] = []
+    prompts: list[str] = []
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        if "sessions" in args:
+            return ProcessResult(0, "", "")
+        schemas.append(json.loads((cwd / "output-schema.json").read_text()))
+        prompts.append(stdin or (cwd / "prompt.txt").read_text())
+        return ProcessResult(0, native_payload("codex_cli"), "")
+
+    def tool_calls(schema: dict[str, Any]) -> dict[str, Any]:
+        return cast("dict[str, Any]", schema["properties"]["tool_calls"])
+
+    tool = ToolDefinition("vault_balance", "Read a balance", {"type": "object", "properties": {}})
+    adapter = cli_adapter("codex_cli", runner)
+    asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (tool,), Limits())))
+    assert tool_calls(schemas[0])["items"]["properties"]["name"] == {
+        "type": "string",
+        "enum": ["vault_balance"],
+    }
+    assert "vault_balance" in prompts[0]
+
+    # With no catalog the model may not request a tool at all.
+    asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits())))
+    assert tool_calls(schemas[1])["maxItems"] == 0
+
+
+@pytest.mark.parametrize("driver", sorted(CLI_ADAPTERS))
+def test_a_launcher_symlink_is_resolved_to_its_installation_binary(
+    driver: str, tmp_path: Path
+) -> None:
+    """A packaged CLI re-executes itself, and a sandbox refuses the symlink spelling."""
+    adapter_type, command = CLI_ADAPTERS[driver]
+    installation = tmp_path / "releases" / "current"
+    installation.mkdir(parents=True)
+    concrete = installation / f"{command}.bin"
+    concrete.write_text("#!/bin/sh\n")
+    concrete.chmod(0o700)
+    launcher = tmp_path / "bin" / command
+    launcher.parent.mkdir()
+    launcher.symlink_to(concrete)
+    launched: list[str] = []
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        if "sessions" in args:
+            return ProcessResult(0, "", "")
+        launched.append(args[0])
+        return ProcessResult(0, native_payload(driver), "")
+
+    profile = ModelProfile("test", "provider", "exact-model", True, False)
+    connection = ProviderConnection("provider", driver, ProcessingClass.EXTERNAL, command=command)
+    adapter = adapter_type(connection, profile, runner, lambda _: str(launcher))
+    asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits())))
+    assert launched == [str(concrete.resolve())]
+
+    # Health must describe the same installation the completion path launches.
+    asyncio.run(adapter.health())
+    assert launched[1] == str(concrete.resolve())
+
+
+@pytest.mark.parametrize("driver", sorted(CLI_ADAPTERS))
+def test_an_unresolvable_or_unexecutable_target_stays_unavailable(
+    driver: str, tmp_path: Path
+) -> None:
+    adapter_type, command = CLI_ADAPTERS[driver]
+
+    async def runner(*_args: object) -> ProcessResult:
+        raise AssertionError("An unresolved executable must not be started")
+
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(tmp_path / "absent")
+    unexecutable = tmp_path / "plain"
+    unexecutable.write_text("not executable")
+    unexecutable.chmod(0o600)
+    directory = tmp_path / "directory"
+    directory.mkdir()
+
+    profile = ModelProfile("test", "provider", "exact-model", True, False)
+    connection = ProviderConnection("provider", driver, ProcessingClass.EXTERNAL, command=command)
+    for target in (dangling, unexecutable, directory, tmp_path / "missing"):
+
+        def located(_command: str, at: str = str(target)) -> str:
+            return at
+
+        adapter = adapter_type(connection, profile, cast("ProcessRunner", runner), located)
+        assert adapter.executable() is None
+        health = asyncio.run(adapter.health())
+        assert health.installed is False
+        assert health.detail_code == "executable_unavailable"
+        with pytest.raises(RuntimeFailure) as failure:
+            asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits())))
+        assert failure.value.code == "provider_unavailable"

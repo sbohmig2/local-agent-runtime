@@ -11,6 +11,8 @@ port while preserving their real differences.
 | Hosted routing | Require an explicit OpenRouter profile, secret reference, egress consent, and effective-upstream provenance. |
 | Embeddings | Keep LM Studio and OpenRouter embedding profiles independent from reasoning selection and enforce vector-space fingerprints. |
 | Health | Distinguish installation, authentication, availability, compatibility, selection, and task qualification. |
+| Reasoning effort | Publish only efforts an adapter delivers; refuse unsupported combinations before dispatch and snapshot each turn's choice. |
+| Discovery | Enumerate models only where a provider offers a machine-readable catalog; report `supported: false` otherwise. |
 | Fallback | Resolve an exact profile and fail explicitly; never switch provider or model silently. |
 | Tools | Normalize requests while leaving authorization, validation, execution, and material approval to the consumer. |
 | Provenance | Preserve configured and effective provider/model, processing class, timing, usage when available, and validation outcome. |

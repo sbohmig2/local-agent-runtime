@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from local_agent_runtime.configuration import load_configuration, validate_connection
-from local_agent_runtime.contracts import ProcessingClass, ProviderConnection
+from local_agent_runtime.contracts import ProcessingClass, ProviderConnection, ReasoningEffort
 from local_agent_runtime.errors import RuntimeFailure
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,3 +55,37 @@ def test_config_cannot_mislabel_external_processing() -> None:
         validate_connection(
             replace(config.providers["openrouter"], processing=ProcessingClass.LOCAL)
         )
+
+
+def test_profile_reasoning_efforts_are_validated(tmp_path: Path) -> None:
+    def written(fragment: str) -> Path:
+        path = tmp_path / "runtime.yaml"
+        path.write_text(
+            "version: 1\n"
+            "providers:\n  local:\n    driver: lmstudio\n"
+            "profiles:\n  reason:\n    provider: local\n    model: m\n"
+            "    allow_external_processing: false\n" + fragment + "default_profile: reason\n"
+            "task_routes: {}\n",
+            encoding="utf-8",
+        )
+        return path
+
+    configured = load_configuration(
+        written("    reasoning_efforts: [high, low]\n    default_reasoning_effort: low\n")
+    )
+    profile = configured.profiles["reason"]
+    assert profile.reasoning_efforts == (ReasoningEffort.HIGH, ReasoningEffort.LOW)
+    assert profile.default_reasoning_effort is ReasoningEffort.LOW
+    assert load_configuration(written("")).profiles["reason"].reasoning_efforts == ()
+
+    for fragment in (
+        "    reasoning_efforts: [enormous]\n",
+        "    reasoning_efforts: [low, low]\n",
+        "    reasoning_efforts: []\n",
+        "    reasoning_efforts: high\n",
+        "    default_reasoning_effort: enormous\n",
+        "    reasoning_efforts: [low]\n    default_reasoning_effort: high\n",
+    ):
+        with pytest.raises(RuntimeFailure) as failure:
+            load_configuration(written(fragment))
+        assert failure.value.code == "invalid_configuration"
