@@ -29,6 +29,7 @@ TERMINAL_OR_PAUSED = {
     SessionStatus.FAILED.value,
     SessionStatus.CANCELED.value,
 }
+SSE_HEARTBEAT_SECONDS: float = 15
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
@@ -289,17 +290,24 @@ def create_app(
 
         async def stream() -> AsyncIterator[bytes]:
             cursor = after
+            loop = asyncio.get_running_loop()
+            last_frame_at = loop.time()
             while True:
                 batch = service.events(request.path_params["session_id"], cursor)
                 for event in batch:
                     cursor = event["sequence"]
                     data = json.dumps(event, separators=(",", ":"))
                     yield f"id: {cursor}\nevent: {event['type']}\ndata: {data}\n\n".encode()
+                    last_frame_at = loop.time()
                 state = service.session(request.path_params["session_id"])
                 if state["status"] in TERMINAL_OR_PAUSED and not batch:
                     break
                 if await request.is_disconnected():
                     break
+                if not batch and loop.time() - last_frame_at >= SSE_HEARTBEAT_SECONDS:
+                    # Transport liveness only: no runtime event or cursor change.
+                    yield b": heartbeat\n\n"
+                    last_frame_at = loop.time()
                 await asyncio.sleep(0.05)
 
         return StreamingResponse(

@@ -13,7 +13,7 @@ import type {
   ToolResultsRequest
 } from "../generated.js";
 
-export const RUNTIME_PACKAGE_VERSION = "0.2.0";
+export const RUNTIME_PACKAGE_VERSION = "0.2.1";
 export const RUNTIME_API_VERSION = "1.1.0";
 
 /** Provider-neutral effort vocabulary. A profile publishes the subset it supports. */

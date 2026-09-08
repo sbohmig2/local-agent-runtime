@@ -48,6 +48,7 @@ consumer-owned and must not be added to this package.
 
 ## Tasks
 
+- LAR-006 — review — [Keep long-running event streams alive](../../tasks/LAR-006-keep-long-running-event-streams-alive.md)
 - LAR-005 — done — [Model selection and reasoning controls](../../tasks/done/LAR-005-deliver-model-selection-and-reasoning-controls.md)
 
 - LAR-004 — done — [Deliver the reusable TypeScript host toolkit](../../tasks/done/LAR-004-deliver-reusable-typescript-host-toolkit.md)

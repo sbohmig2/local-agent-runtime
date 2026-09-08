@@ -5,7 +5,7 @@ truth.
 
 ## Review lane
 
-No task is in review.
+- [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane
 

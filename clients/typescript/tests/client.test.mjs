@@ -57,6 +57,24 @@ test("SSE is decoded across arbitrary UTF-8 and frame boundaries", async () => {
   assert.deepEqual(received, events);
 });
 
+test("SSE heartbeat comments do not produce events or advance the cursor", async () => {
+  const events = [
+    {sequence: 8, type: "provider_started", occurred_at: "now", payload: {}},
+    {sequence: 9, type: "session_completed", occurred_at: "later", payload: {text: "answer"}}
+  ];
+  const stream = `: heartbeat\n\ndata: ${JSON.stringify(events[0])}\n\n`
+    + `: heartbeat\n\n: heartbeat\n\ndata: ${JSON.stringify(events[1])}\n\n: heartbeat\n\n`;
+  const bytes = new TextEncoder().encode(stream);
+  const client = new RuntimeClient({baseUrl: "http://127.0.0.1:8765", bearerToken: "t".repeat(40),
+    fetch: async () => new Response(new ReadableStream({start(controller) {
+      for (const byte of bytes) controller.enqueue(new Uint8Array([byte]));
+      controller.close();
+    }}))});
+  const received = [];
+  for await (const event of client.streamEvents("session", 7)) received.push(event);
+  assert.deepEqual(received, events);
+});
+
 test("generated methods cover every canonical OpenAPI operation", () => {
   const spec = JSON.parse(readFileSync(new URL("../../../contracts/openapi.json", import.meta.url)));
   for (const path of Object.values(spec.paths)) {

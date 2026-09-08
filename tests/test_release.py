@@ -27,7 +27,7 @@ from scripts.build_release import (
     write_manifest,
 )
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 COMMIT = "1" * 40
 
 

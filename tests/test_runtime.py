@@ -11,6 +11,7 @@ import httpx
 import pytest
 from jsonschema import Draft202012Validator
 
+import local_agent_runtime.gateway as gateway_module
 import local_agent_runtime.service as service_module
 from local_agent_runtime.adapters.selection import SelectionStore
 from local_agent_runtime.api_contract import API_VERSION, SCHEMAS
@@ -134,6 +135,45 @@ def test_shared_conformance_fixture() -> None:
     assert_schema("ErrorResponse", fixture["error"])
     assert_schema("EventsResponse", {"events": fixture["events"]})
     assert [event["sequence"] for event in fixture["events"]] == [1, 2]
+
+
+def test_gateway_heartbeats_keep_idle_stream_alive_without_runtime_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def run() -> None:
+        service, fake = runtime(tmp_path)
+        fake.delay_seconds = 0.16
+        monkeypatch.setattr(gateway_module, "SSE_HEARTBEAT_SECONDS", 0.01)
+        app = create_app(service, bearer_token=TOKEN)
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            created = await service.create_session("Slow synthetic provider")
+            response = await client.get(
+                f"/v1/sessions/{created['id']}/events",
+                headers={"Authorization": f"Bearer {TOKEN}", "Accept": "text/event-stream"},
+            )
+            assert response.status_code == 200
+            assert response.text.count(": heartbeat\n\n") >= 2
+            events = [
+                json.loads(line.removeprefix("data: "))
+                for line in response.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            assert events == service.events(created["id"])
+            assert [event["sequence"] for event in events] == [1, 2, 3]
+            assert [event["type"] for event in events] == [
+                "session_created",
+                "provider_started",
+                "session_completed",
+            ]
+            # A settled session ends promptly without adding heartbeat-only work.
+            settled = await client.get(
+                f"/v1/sessions/{created['id']}/events?after=3",
+                headers={"Authorization": f"Bearer {TOKEN}", "Accept": "text/event-stream"},
+            )
+            assert settled.text == ""
+
+    asyncio.run(run())
 
 
 def test_session_tool_loop_and_atomic_results(tmp_path: Path) -> None:
