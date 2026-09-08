@@ -1,7 +1,7 @@
 ---
 tracker: LAR-005
 component: agent-runtime
-status: review
+status: done
 priority: P0
 effort: L
 parallel_safe: no
@@ -12,7 +12,7 @@ tags: [lar]
 
 # LAR-005 - Deliver model selection and reasoning controls
 
-**Status:** Review
+**Status:** Done
 
 ## Goal
 
@@ -92,12 +92,21 @@ LAR-004 public host toolkit is complete.
 
 ## Progress Notes
 
+- 2026-09-08: Closed after independent Claude Opus review returned ready to
+  close with no blocking finding and the review snapshot remained unchanged.
+  Source commit `91c8ac58ae2c6bc0f512fa3a0e35f9f84c9cfa24` passed GitHub CI and was
+  published as immutable GitHub release `v0.2.0`. Anonymous downloads were
+  verified against `SHA256SUMS`: TypeScript client
+  `291bb42b51103cc4159604c416ade013412a494a623b2d708f4b6a7e674eb387`,
+  Python wheel `73dd04d8ba4e4013c73e07ae512c7c4346428acc2a51ec829657af1ea7ae889c`,
+  and source distribution
+  `6afdb8674d87b45e47b02879c3198ebe86b8f5946b05adccd31a27da1a6a36f4`.
+
 - 2026-09-08: Developer readiness is complete. The repository gate passes 199
   Python tests with one opt-in live test skipped, 44 TypeScript tests, generated
   contract checks, three immutable artifact builds, and isolated wheel, source,
   root-client and host-client installs. Owner authorized the `v0.2.0` release.
-  LAR-005 entered the required independent closure review; no publication,
-  source commit, tag, or release has occurred yet.
+  LAR-005 entered the required independent closure review.
 
 - 2026-09-08: Addressed advisory review findings ADV-CLAUDE-003 and
   ADV-CLAUDE-010. Passive adapter inspection survives an unresolved selection,

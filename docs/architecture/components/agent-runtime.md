@@ -48,7 +48,7 @@ consumer-owned and must not be added to this package.
 
 ## Tasks
 
-- LAR-005 — review — [Model selection and reasoning controls](../../tasks/LAR-005-deliver-model-selection-and-reasoning-controls.md)
+- LAR-005 — done — [Model selection and reasoning controls](../../tasks/done/LAR-005-deliver-model-selection-and-reasoning-controls.md)
 
 - LAR-004 — done — [Deliver the reusable TypeScript host toolkit](../../tasks/done/LAR-004-deliver-reusable-typescript-host-toolkit.md)
 - LAR-003 — done — [Publish the typed Python distribution](../../tasks/done/LAR-003-publish-typed-python-distribution.md)

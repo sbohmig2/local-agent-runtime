@@ -5,7 +5,7 @@ truth.
 
 ## Review lane
 
-- [LAR-005 - Deliver model selection and reasoning controls](./LAR-005-deliver-model-selection-and-reasoning-controls.md)
+No task is in review.
 
 ## Queued lane
 
@@ -13,6 +13,9 @@ No additional task is approved.
 
 ## Completed
 
+- [LAR-005 - Deliver model selection and reasoning controls](./done/LAR-005-deliver-model-selection-and-reasoning-controls.md)
+  - immutable public `v0.2.0` with configured model selection, reasoning
+    controls, supported-adapter inventory, detection, and managed activation.
 - [LAR-004 - Deliver the reusable TypeScript host toolkit](./done/LAR-004-deliver-reusable-typescript-host-toolkit.md)
   - immutable public `v0.1.3` with additive backend-only Node host primitives.
 - [LAR-003 - Publish the typed Python distribution](./done/LAR-003-publish-typed-python-distribution.md)
