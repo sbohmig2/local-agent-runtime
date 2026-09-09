@@ -8,6 +8,20 @@
 | LM Studio | Loopback HTTP | Local | None by default | Explicit endpoint and model; reject non-loopback |
 | OpenRouter | HTTPS API | External | Environment-backed secret reference | Explicit profile/model, egress permission, and effective upstream provenance |
 
+## Provider-native public web
+
+The Codex, Claude, and Grok CLI routes expose `provider_native_web: true` and
+allow only their built-in public-web search and page-retrieval tools. The
+installed CLI account and administrator policy remain authoritative, so the
+capability describes the adapter surface rather than promising that every
+request will be permitted upstream.
+
+This capability does not grant shell execution, filesystem access, raw network
+sockets, browser or computer control, plugins, subagents, inherited MCP servers,
+or arbitrary provider-native tools. LM Studio and OpenRouter report the
+capability as false; a consuming application may separately supply a bounded
+web-search tool through the ordinary tool-call contract.
+
 ## Reasoning effort and discovery
 
 | Route | Effort control | Levels the route can send | Model discovery |

@@ -76,7 +76,8 @@ class CLIAdapterBase(ABC):
 
     @property
     def capabilities(self) -> Capabilities:
-        # CLI envelope tools are consumer-brokered, never native host tools.
+        # CLI envelope tools are consumer-brokered. Provider adapters may add
+        # only their explicitly documented native public-web capability.
         return Capabilities(reasoning_effort_control=bool(self.reasoning_efforts))
 
     @property
@@ -197,7 +198,10 @@ class CLIAdapterBase(ABC):
         executable = self.executable()
         if executable is None:
             raise provider_unavailable()
-        prompt = _bounded_prompt(invocation)
+        prompt = _bounded_prompt(
+            invocation,
+            allow_provider_native_web=self.capabilities.provider_native_web,
+        )
         effort = self.requested_effort(invocation)
         with tempfile.TemporaryDirectory(prefix="lar-provider-") as directory:
             root = Path(directory)

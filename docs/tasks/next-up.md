@@ -3,8 +3,13 @@
 This is the only approved pickup list. Task frontmatter is the status source of
 truth.
 
+## In progress
+
+No task is currently in implementation.
+
 ## Review lane
 
+- [LAR-008 - Expose provider-native web search](./LAR-008-expose-provider-native-web-search.md)
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 - [LAR-007 - Deliver runtime-issued model options](./LAR-007-deliver-runtime-issued-model-options.md)
 

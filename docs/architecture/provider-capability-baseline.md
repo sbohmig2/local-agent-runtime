@@ -15,6 +15,7 @@ port while preserving their real differences.
 | Discovery | Enumerate models only where a provider offers a machine-readable catalog; report `supported: false` otherwise. |
 | Fallback | Resolve an exact profile and fail explicitly; never switch provider or model silently. |
 | Tools | Normalize requests while leaving authorization, validation, execution, and material approval to the consumer. |
+| Native web | CLI routes may expose provider-native public-web search/fetch when the adapter explicitly allowlists it; this never implies raw network, shell, filesystem, MCP, browser-automation, or computer-control access. |
 | Provenance | Preserve configured and effective provider/model, processing class, timing, usage when available, and validation outcome. |
 
 The runtime also provides bounded sessions, ordered normalized events,

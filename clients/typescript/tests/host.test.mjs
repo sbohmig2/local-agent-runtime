@@ -21,7 +21,8 @@ const CAPABILITIES = {
   conversation_continuation: true,
   model_discovery: false,
   token_limit_control: true,
-  reasoning_effort_control: true
+  reasoning_effort_control: true,
+  provider_native_web: false
 };
 const EFFORTS = ["low", "medium", "high"];
 const PROVIDERS = ["codex", "claude", "grok", "lm-studio", "openrouter"];
@@ -43,7 +44,7 @@ class FakeRuntime {
   profileSignals = [];
 
   async health() {
-    return { status: "available", package_version: "0.3.0", api_version: "1.2.0" };
+    return { status: "available", package_version: "0.4.0", api_version: "1.3.0" };
   }
 
   async profiles(includeHealth = false, signal = undefined, includeDiscovery = false) {
@@ -686,7 +687,7 @@ test("HTTP adapter rejects non-literal-loopback binds at runtime", () => {
 test("SSE connects while idle and host shutdown closes the stream", async () => {
   const agent = {
     async health() {
-      return { status: "available", runtimeVersion: "0.3.0", apiVersion: "1.2.0" };
+      return { status: "available", runtimeVersion: "0.4.0", apiVersion: "1.3.0" };
     },
     async profiles() {
       return { selectedProfile: "local", profiles: [] };

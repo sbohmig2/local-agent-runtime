@@ -118,6 +118,9 @@
           "model_discovery": {
             "type": "boolean"
           },
+          "provider_native_web": {
+            "type": "boolean"
+          },
           "reasoning_effort_control": {
             "type": "boolean"
           },
@@ -145,7 +148,8 @@
           "conversation_continuation",
           "model_discovery",
           "token_limit_control",
-          "reasoning_effort_control"
+          "reasoning_effort_control",
+          "provider_native_web"
         ],
         "type": "object"
       },
@@ -1334,7 +1338,7 @@
   },
   "info": {
     "title": "Local Agent Runtime",
-    "version": "1.2.0"
+    "version": "1.3.0"
   },
   "openapi": "3.1.0",
   "paths": {

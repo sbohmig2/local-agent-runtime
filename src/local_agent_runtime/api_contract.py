@@ -2,7 +2,7 @@
 
 from typing import Any
 
-API_VERSION = "1.2.0"
+API_VERSION = "1.3.0"
 
 
 def ref(name: str) -> dict[str, str]:
@@ -68,6 +68,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 "model_discovery",
                 "token_limit_control",
                 "reasoning_effort_control",
+                "provider_native_web",
             ]
         }
     ),

@@ -4,7 +4,7 @@ prefix: LAR
 status: active
 initiatives:
   - reusable-agent-runtime
-updated: 2026-09-08
+updated: 2026-09-09
 ---
 
 # Agent runtime
@@ -48,6 +48,7 @@ consumer-owned and must not be added to this package.
 
 ## Tasks
 
+- LAR-008 — review — [Expose provider-native web search](../../tasks/LAR-008-expose-provider-native-web-search.md)
 - LAR-007 — review — [Deliver runtime-issued model options](../../tasks/LAR-007-deliver-runtime-issued-model-options.md)
 - LAR-006 — review — [Keep long-running event streams alive](../../tasks/LAR-006-keep-long-running-event-streams-alive.md)
 - LAR-005 — done — [Model selection and reasoning controls](../../tasks/done/LAR-005-deliver-model-selection-and-reasoning-controls.md)

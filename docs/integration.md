@@ -166,8 +166,8 @@ unauthenticated requests.
 
 ## Artifact compatibility
 
-The Python package and TypeScript client currently share release version 0.1.3,
-while the HTTP contract advertises API version 1.0.0. A consumer pins both
+The Python package and TypeScript client currently share release version 0.4.0,
+while the HTTP contract advertises API version 1.3.0. A consumer pins both
 artifacts from the same release and keeps its lockfiles. Upgrade work should:
 
 1. install the new artifacts in a branch;

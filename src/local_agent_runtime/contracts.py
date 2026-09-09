@@ -72,6 +72,7 @@ class Capabilities:
     model_discovery: bool = False
     token_limit_control: bool = False
     reasoning_effort_control: bool = False
+    provider_native_web: bool = False
 
     def public_dict(self) -> dict[str, bool]:
         return {
@@ -83,6 +84,7 @@ class Capabilities:
             "model_discovery": self.model_discovery,
             "token_limit_control": self.token_limit_control,
             "reasoning_effort_control": self.reasoning_effort_control,
+            "provider_native_web": self.provider_native_web,
         }
 
 

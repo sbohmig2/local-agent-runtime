@@ -14,8 +14,8 @@ import type {
   ToolResultsRequest
 } from "../generated.js";
 
-export const RUNTIME_PACKAGE_VERSION = "0.3.0";
-export const RUNTIME_API_VERSION = "1.2.0";
+export const RUNTIME_PACKAGE_VERSION = "0.4.0";
+export const RUNTIME_API_VERSION = "1.3.0";
 
 /** Provider-neutral effort vocabulary. A profile publishes the subset it supports. */
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";

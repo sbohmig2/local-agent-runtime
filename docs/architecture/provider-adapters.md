@@ -22,9 +22,12 @@ provider-neutral; only codecs translate them into CLI or compatible HTTP payload
 The CLI envelope uses JSON-encoded argument strings internally so arbitrary
 consumer tool schemas do not require an unrestricted native structured-output
 object. The application decodes and validates the actual argument object against
-the registered schema. Native CLI host tools remain disabled. Structured final
-responses are locally schema-validated; compatibility does not imply that every
-model will successfully produce them.
+the registered schema. Native shell, filesystem mutation, MCP inheritance,
+subagent, browser-automation, and computer-control tools remain disabled. Codex,
+Claude, and Grok explicitly allowlist only their provider-native public-web
+search/fetch capability; provider account and administrator policy remain
+authoritative. Structured final responses are locally schema-validated;
+compatibility does not imply that every model will successfully produce them.
 
 To add a provider, implement the relevant port(s), register their factories,
 define validated connection/processing/credential rules, document provider

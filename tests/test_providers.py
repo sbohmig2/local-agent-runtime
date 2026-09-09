@@ -19,6 +19,7 @@ from local_agent_runtime.adapters.providers.grok import GrokAdapter
 from local_agent_runtime.adapters.providers.lmstudio import LMStudioAdapter
 from local_agent_runtime.adapters.providers.openrouter import OpenRouterAdapter
 from local_agent_runtime.contracts import (
+    Capabilities,
     HealthStatus,
     Invocation,
     Limits,
@@ -83,6 +84,7 @@ def test_cli_contract_and_isolation(
         assert cwd.stat().st_mode & 0o077 == 0
         if driver == "grok_cli":
             assert environment["HOME"] == str(cwd)
+            assert environment["GROK_WEB_FETCH"] == "1"
             assert stdin is None
             assert "prompt-canary" in (cwd / "prompt.txt").read_text()
             assert (cwd / "prompt.txt").stat().st_mode & 0o077 == 0
@@ -91,6 +93,8 @@ def test_cli_contract_and_isolation(
             assert copied.stat().st_mode & 0o077 == 0
         else:
             assert stdin is not None and "prompt-canary" in stdin
+            assert "native public-web search and page-retrieval" in stdin
+            assert "Do not use any other native tool" in stdin
         payload: object = {"content": "answer", "tool_calls": []}
         if driver == "claude_cli":
             payload = {"structured_output": payload, "is_error": False}
@@ -124,11 +128,62 @@ def test_cli_contract_and_isolation(
     assert args[args.index("--model") + 1] == "exact-model"
     if driver == "codex_cli":
         assert "--ignore-user-config" in args
+        assert "--strict-config" in args
         assert any('":root"="deny"' in item for item in args)
+        assert 'web_search="live"' in args
+        assert "browser_use" in args
+        assert "computer_use" in args
+    elif driver == "claude_cli":
+        assert args[args.index("--tools") + 1] == "WebSearch,WebFetch"
+        assert args[args.index("--allowedTools") + 1] == "WebSearch,WebFetch"
+        assert "--restricted" in args
+        assert "--no-chrome" in args
     else:
-        assert args[args.index("--tools") + 1] == ""
+        assert args[args.index("--tools") + 1] == "web_search,web_fetch"
+        assert args[args.index("--disallowed-tools") + 1] == "search_tool,use_tool"
+        assert args.count("--allow") == 2
+        assert "WebSearch" in args
+        assert "WebFetch" in args
+        assert "--no-memory" in args
+        assert "--disable-web-search" not in args
+    assert adapter.capabilities.provider_native_web is True
     if driver == "claude_cli":
         assert "--safe-mode" in args
+
+
+def test_cli_without_native_web_forbids_all_provider_native_tools(tmp_path: Path) -> None:
+    observed: list[str] = []
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        assert stdin is not None
+        observed.append(stdin)
+        return ProcessResult(0, '{"content":"answer","tool_calls":[]}', "")
+
+    class NoNativeWebAdapter(CodexAdapter):
+        @property
+        def capabilities(self) -> Capabilities:
+            return Capabilities()
+
+    profile = ModelProfile("test", "provider", "exact-model", True, False)
+    connection = ProviderConnection(
+        "provider", "codex_cli", ProcessingClass.EXTERNAL, command="codex"
+    )
+    adapter = NoNativeWebAdapter(
+        connection,
+        profile,
+        runner,
+        lambda _: "/trusted/codex",
+        lambda path: path,
+    )
+    asyncio.run(adapter.complete(Invocation((Message("user", "prompt-canary"),), (), Limits())))
+    assert "Do not use any provider-native tool" in observed[0]
+    assert "You may internally use" not in observed[0]
 
 
 @pytest.mark.parametrize("remote", [False, True])
@@ -658,9 +713,65 @@ def test_grok_unwraps_its_native_session_envelope() -> None:
         assert result.text == text
 
 
+def test_grok_accepts_bounded_native_web_progress_before_final_text() -> None:
+    raw = json.dumps(
+        {
+            "text": (
+                '{"content":"Searching the public web.","tool_calls":[]}'
+                '{"content":"Example Domains","tool_calls":[]}'
+            ),
+            "stopReason": "end_turn",
+            "structuredOutput": None,
+        }
+    )
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        return ProcessResult(0, "" if "sessions" in args else raw, "")
+
+    adapter = cli_adapter("grok_cli", runner)
+    result = asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits())))
+    assert result.text == "Example Domains"
+
+
+def test_grok_rejects_application_tool_request_before_a_concatenated_final_text() -> None:
+    raw = json.dumps(
+        {
+            "text": (
+                '{"content":"","tool_calls":[{"id":"1","name":"vault",'
+                '"arguments":"{}"}]}'
+                '{"content":"answer","tool_calls":[]}'
+            ),
+            "stopReason": "end_turn",
+            "structuredOutput": None,
+        }
+    )
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        return ProcessResult(0, "" if "sessions" in args else raw, "")
+
+    adapter = cli_adapter("grok_cli", runner)
+    tool = ToolDefinition("vault", "Synthetic", {"type": "object"})
+    with pytest.raises(RuntimeFailure) as failure:
+        asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (tool,), Limits())))
+    assert failure.value.code == "provider_unavailable"
+
+
 @pytest.mark.parametrize(
     "raw,code",
     [
+        ("[" * 1100 + "0" + "]" * 1100, "provider_unavailable"),
         ('{"content":"bare","tool_calls":[]}', "provider_unavailable"),
         ('{"text":"x","stopReason":"refusal"}', "provider_incomplete"),
         ('{"structuredOutput":[]}', "provider_unavailable"),
@@ -769,6 +880,7 @@ def test_lmstudio_discovers_models_and_only_claims_declared_effort(
     assert adapter.VERIFIED_EFFORTS == {}
     assert adapter.reasoning_efforts == ()
     assert adapter.capabilities.reasoning_effort_control is False
+    assert adapter.capabilities.provider_native_web is False
     assert adapter.capabilities.model_discovery is True
     discovery = asyncio.run(adapter.discover_models())
     assert discovery == ModelDiscovery(True, ("local-model", "other"), None)
@@ -830,6 +942,7 @@ def test_openrouter_stays_out_of_reasoning_and_discovery_scope(
     )
     assert adapter.reasoning_efforts == ()
     assert adapter.capabilities.reasoning_effort_control is False
+    assert adapter.capabilities.provider_native_web is False
     assert asyncio.run(adapter.discover_models()).supported is False
     with pytest.raises(RuntimeFailure) as failure:
         asyncio.run(

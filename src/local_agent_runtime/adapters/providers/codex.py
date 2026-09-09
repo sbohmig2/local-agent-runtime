@@ -29,6 +29,7 @@ class CodexAdapter(CLIAdapterBase):
         return Capabilities(
             model_discovery=True,
             reasoning_effort_control=bool(self.reasoning_efforts),
+            provider_native_web=True,
         )
 
     async def discover_models(self) -> ModelDiscovery:
@@ -117,7 +118,14 @@ class CodexAdapter(CLIAdapterBase):
     def arguments(
         self, executable: str, root: Path, schema: Path, effort: ReasoningEffort | None
     ) -> list[str]:
-        args = [executable, "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules"]
+        args = [
+            executable,
+            "exec",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--strict-config",
+        ]
         for feature in (
             "shell_tool",
             "apps",
@@ -128,7 +136,7 @@ class CodexAdapter(CLIAdapterBase):
         ):
             args.extend(("--disable", feature))
         for setting in (
-            'web_search="disabled"',
+            'web_search="live"',
             # Project and user AGENTS.md files are untrusted third-party
             # instructions for a generic runtime, so this route never loads them.
             # It is not the sandbox fix: launching the resolved installation

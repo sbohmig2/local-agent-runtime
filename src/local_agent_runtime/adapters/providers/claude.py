@@ -67,6 +67,7 @@ class ClaudeAdapter(CLIAdapterBase):
         return Capabilities(
             model_discovery=True,
             reasoning_effort_control=bool(self.reasoning_efforts),
+            provider_native_web=True,
         )
 
     async def discover_models(self) -> ModelDiscovery:
@@ -102,6 +103,8 @@ class ClaudeAdapter(CLIAdapterBase):
             executable,
             "--print",
             "--safe-mode",
+            "--restricted",
+            "--no-chrome",
             "--no-session-persistence",
             "--disable-slash-commands",
             "--setting-sources",
@@ -110,7 +113,9 @@ class ClaudeAdapter(CLIAdapterBase):
             "--mcp-config",
             '{"mcpServers":{}}',
             "--tools",
-            "",
+            "WebSearch,WebFetch",
+            "--allowedTools",
+            "WebSearch,WebFetch",
             "--permission-mode",
             "dontAsk",
             "--output-format",

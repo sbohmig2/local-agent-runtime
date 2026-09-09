@@ -45,6 +45,7 @@ class GrokAdapter(CLIAdapterBase):
         return Capabilities(
             model_discovery=True,
             reasoning_effort_control=bool(self.reasoning_efforts),
+            provider_native_web=True,
         )
 
     async def discover_models(self) -> ModelDiscovery:
@@ -60,7 +61,14 @@ class GrokAdapter(CLIAdapterBase):
         source = environment.get("HOME")
         if source:
             _copy_grok_auth(Path(source), root)
-        environment.update({"HOME": str(root), "XDG_CONFIG_HOME": str(root), "TMPDIR": str(root)})
+        environment.update(
+            {
+                "HOME": str(root),
+                "XDG_CONFIG_HOME": str(root),
+                "TMPDIR": str(root),
+                "GROK_WEB_FETCH": "1",
+            }
+        )
         return environment
 
     def auth_arguments(self, executable: str) -> None:
@@ -89,10 +97,16 @@ class GrokAdapter(CLIAdapterBase):
             "--permission-mode",
             "dontAsk",
             "--tools",
-            "",
-            "--disable-web-search",
+            "web_search,web_fetch",
+            "--disallowed-tools",
+            "search_tool,use_tool",
+            "--allow",
+            "WebSearch",
+            "--allow",
+            "WebFetch",
             "--no-subagents",
             "--no-plan",
+            "--no-memory",
             "--verbatim",
             "--cwd",
             str(root),
@@ -139,7 +153,7 @@ class GrokAdapter(CLIAdapterBase):
             decoded = (
                 super().decode(json.dumps(output))
                 if isinstance(output, dict)
-                else super().decode(payload["text"])
+                else self._decode_text_envelopes(payload["text"])
                 if isinstance(payload.get("text"), str)
                 else None
             )
@@ -149,9 +163,34 @@ class GrokAdapter(CLIAdapterBase):
                     effective_model=_effective_model(payload.get("modelUsage")),
                     usage=safe_usage(payload.get("usage")),
                 )
-        except ValueError:
+        except (ValueError, RecursionError):
             pass
         raise provider_unavailable("Grok returned an invalid result envelope")
+
+    def _decode_text_envelopes(self, raw: str) -> CompletionResult:
+        """Accept Grok's concatenated progress/final envelopes after native web use.
+
+        The CLI can place one schema-valid progress object immediately before the
+        schema-valid final object while leaving ``structuredOutput`` empty. Every
+        object is validated through the shared codec. An application tool request
+        before the final object is ambiguous and remains a hard failure.
+        """
+        decoder = json.JSONDecoder()
+        offset = 0
+        decoded: list[CompletionResult] = []
+        while offset < len(raw):
+            while offset < len(raw) and raw[offset].isspace():
+                offset += 1
+            if offset == len(raw):
+                break
+            value, end = decoder.raw_decode(raw, offset)
+            decoded.append(super().decode(json.dumps(value)))
+            offset = end
+            if len(decoded) > 32:
+                raise ValueError
+        if not decoded or any(item.tool_requests for item in decoded[:-1]):
+            raise ValueError
+        return decoded[-1]
 
 
 def _effective_model(usage: object) -> str | None:
