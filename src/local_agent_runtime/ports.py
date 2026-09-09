@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Protocol
 
 from local_agent_runtime.contracts import (
@@ -34,6 +34,17 @@ class ProviderPort(Protocol):
     async def discover_models(self) -> ModelDiscovery: ...
 
     async def complete(self, invocation: Invocation) -> CompletionResult: ...
+
+
+TextDeltaSink = Callable[[str], Awaitable[None]]
+
+
+class StreamingProviderPort(ProviderPort, Protocol):
+    """Optional additive port for providers with display-safe native text deltas."""
+
+    async def complete_streaming(
+        self, invocation: Invocation, emit_text: TextDeltaSink
+    ) -> CompletionResult: ...
 
 
 ProviderFactory = Callable[[ProviderConnection, ModelProfile], ProviderPort]

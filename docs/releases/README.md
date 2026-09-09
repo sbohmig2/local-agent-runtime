@@ -10,4 +10,5 @@ owned operations.
 - [v0.2.1](./v0.2.1.md) - idle-safe SSE heartbeat for long-running provider work.
 - [v0.3.0](./v0.3.0.md) - runtime-issued selectable model options and exact-model dispatch.
 - [v0.4.0](./v0.4.0.md) - narrowly bounded provider-native web search for external CLI routes.
+- [v0.5.0](./v0.5.0.md) - bounded native assistant-text streaming for LM Studio.
 - [v0.2.0](./v0.2.0.md) - model selection, reasoning controls, and managed adapter catalog.

@@ -85,5 +85,19 @@ def test_configured_profile_completes_a_synthetic_tool_assisted_turn(profile_id:
         assert settled["requested_reasoning_effort"] == effort
         # No installed route reports the level it applied, so it must stay unknown.
         assert settled["effective_reasoning_effort"] is None
+        if connection.driver == "lmstudio":
+            events = runtime.events(created["id"])
+            deltas = [event for event in events if event["type"] == "assistant_text_delta"]
+            assert deltas
+            assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
+            final_round = max(event["payload"]["round"] for event in deltas)
+            assert (
+                "".join(
+                    event["payload"]["delta"]
+                    for event in deltas
+                    if event["payload"]["round"] == final_round
+                )
+                == settled["final_text"]
+            )
 
     asyncio.run(run())

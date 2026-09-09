@@ -2,7 +2,7 @@
 
 from typing import Any
 
-API_VERSION = "1.3.0"
+API_VERSION = "1.4.0"
 
 
 def ref(name: str) -> dict[str, str]:

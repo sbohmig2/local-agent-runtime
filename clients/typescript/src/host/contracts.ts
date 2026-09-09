@@ -14,8 +14,8 @@ import type {
   ToolResultsRequest
 } from "../generated.js";
 
-export const RUNTIME_PACKAGE_VERSION = "0.4.0";
-export const RUNTIME_API_VERSION = "1.3.0";
+export const RUNTIME_PACKAGE_VERSION = "0.5.0";
+export const RUNTIME_API_VERSION = "1.4.0";
 
 /** Provider-neutral effort vocabulary. A profile publishes the subset it supports. */
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -208,6 +208,7 @@ export interface HostEvent {
   type:
     | "session_started"
     | "model_working"
+    | "assistant_text_delta"
     | "tools_requested"
     | "tools_completed"
     | "approval_required"

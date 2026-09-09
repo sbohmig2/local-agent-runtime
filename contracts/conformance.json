@@ -14,6 +14,15 @@
     },
     {
       "sequence": 2,
+      "type": "assistant_text_delta",
+      "occurred_at": "2026-09-07T10:00:00.500000+00:00",
+      "payload": {
+        "round": 1,
+        "delta": "Grüße"
+      }
+    },
+    {
+      "sequence": 3,
       "type": "session_completed",
       "occurred_at": "2026-09-07T10:00:01+00:00",
       "payload": {

@@ -9,6 +9,7 @@ No task is currently in implementation.
 
 ## Review lane
 
+- [LAR-009 - Stream bounded assistant text](./LAR-009-stream-bounded-assistant-text.md)
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane

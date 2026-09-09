@@ -39,10 +39,24 @@ The registry's explicit allowlist is a deliberate trust boundary, not a generic
 HTTP fallback. Separate Python packages may inject a provider factory; deployment
 configuration still needs an explicit validated provider definition.
 
-Token streaming is currently false: gateway SSE carries normalized lifecycle
-events and completed output, not invented token deltas. Grok authentication is
-reported inconclusive when no reliable content-free probe is available. CLI
-effective model remains unknown unless native output establishes it. Configured
+Token streaming is an adapter capability, not a behavior synthesized by the
+gateway. LM Studio uses its loopback OpenAI-compatible SSE response and emits
+bounded `assistant_text_delta` events containing only display-safe assistant
+text. The first fragment is forwarded promptly and later fragments are
+coalesced so token-sized upstream chunks cannot exhaust the session event
+limit. `round` distinguishes provider calls separated by application-tool work,
+and the existing event sequence remains the ordering and replay cursor.
+
+Codex, Claude, Grok, and OpenRouter continue to report token streaming as false.
+Their completed output is never split into invented deltas. Structured-output
+invocations also retain the complete-result path even on LM Studio because
+provisional JSON is not a display-safe assistant answer. A completion remains
+authoritative and must exactly reconcile with the streamed text for that
+provider round; failure or cancellation emits no fabricated completion.
+
+Grok authentication is reported inconclusive when no reliable content-free
+probe is available. CLI effective model remains unknown unless native output
+establishes it. Configured
 qualified-task labels are owner assertions, not qualification performed by the
 runtime. These distinctions must remain visible in consumer settings.
 

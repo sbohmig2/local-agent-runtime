@@ -4,13 +4,14 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
 import httpx
 import pytest
 
+from local_agent_runtime.adapters.chat_codec import chat_body
 from local_agent_runtime.adapters.cli_base import CLIAdapterBase
 from local_agent_runtime.adapters.process import ProcessResult, ProcessRunner, run_process
 from local_agent_runtime.adapters.providers.claude import ClaudeAdapter
@@ -20,6 +21,7 @@ from local_agent_runtime.adapters.providers.lmstudio import LMStudioAdapter
 from local_agent_runtime.adapters.providers.openrouter import OpenRouterAdapter
 from local_agent_runtime.contracts import (
     Capabilities,
+    CompletionResult,
     HealthStatus,
     Invocation,
     Limits,
@@ -32,6 +34,21 @@ from local_agent_runtime.contracts import (
     ToolDefinition,
 )
 from local_agent_runtime.errors import RuntimeFailure
+
+
+class FragmentedStream(httpx.AsyncByteStream):
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        sizes = (1, 2, 5, 3, 8, 13)
+        offset = 0
+        index = 0
+        while offset < len(self.content):
+            size = sizes[index % len(sizes)]
+            yield self.content[offset : offset + size]
+            offset += size
+            index += 1
 
 
 @pytest.mark.parametrize(
@@ -230,6 +247,391 @@ def test_reasoning_http_contract(remote: bool, monkeypatch: pytest.MonkeyPatch) 
     if remote:
         assert body["provider"]["only"] == ["openai"]
         assert body["provider"]["allow_fallbacks"] is False
+
+
+def test_lm_studio_streams_display_text_across_arbitrary_sse_boundaries() -> None:
+    observed: list[httpx.Request] = []
+    frames = [
+        {"model": "model", "choices": [{"index": 0, "delta": {"role": "assistant"}}]},
+        {"model": "model", "choices": [{"index": 0, "delta": {"content": "Hello "}}]},
+        {"model": "model", "choices": [{"index": 0, "delta": {"content": "€"}}]},
+        {
+            "model": "model",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        },
+        {"choices": [], "usage": {"completion_tokens": 2, "secret": 9}},
+    ]
+    content = (
+        b"".join(
+            f"data: {json.dumps(frame, ensure_ascii=False)}\r\n\r\n".encode() for frame in frames
+        )
+        + b"data: [DONE]\r\n\r\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        return httpx.Response(
+            200, headers={"Content-Type": "text/event-stream"}, stream=FragmentedStream(content)
+        )
+
+    connection = ProviderConnection(
+        "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+    )
+    adapter = LMStudioAdapter(
+        connection,
+        ModelProfile("profile", "provider", "model", False, True),
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    async def run() -> tuple[CompletionResult, list[str]]:
+        deltas: list[str] = []
+
+        async def emit(delta: str) -> None:
+            deltas.append(delta)
+
+        result = await adapter.complete_streaming(
+            Invocation((Message("user", "hi"),), (), Limits()), emit
+        )
+        return result, deltas
+
+    result, deltas = asyncio.run(run())
+    assert result.text == "Hello €"
+    assert result.usage == {"completion_tokens": 2}
+    assert deltas == ["Hello ", "€"]
+    assert adapter.capabilities.token_streaming is True
+    body = json.loads(observed[0].content)
+    assert body["stream"] is True
+    assert body["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_lm_studio_stream_preserves_non_ascii_json_line_characters(separator: str) -> None:
+    expected = f"before{separator}after"
+    frame = {
+        "model": "model",
+        "choices": [{"index": 0, "delta": {"content": expected}, "finish_reason": "stop"}],
+    }
+    content = f"data: {json.dumps(frame, ensure_ascii=False)}\n\n".encode()
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", "model", False, True),
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, stream=FragmentedStream(content))
+            )
+        ),
+    )
+
+    async def run() -> tuple[CompletionResult, list[str]]:
+        deltas: list[str] = []
+
+        async def emit(delta: str) -> None:
+            deltas.append(delta)
+
+        result = await adapter.complete_streaming(
+            Invocation((Message("user", "hi"),), (), Limits()), emit
+        )
+        return result, deltas
+
+    result, deltas = asyncio.run(run())
+    assert result.text == expected
+    assert deltas == [expected]
+
+
+def test_lm_studio_stream_budget_covers_realistic_per_token_and_reasoning_frames() -> None:
+    model = "m" * 256
+    reasoning_frames = [
+        {
+            "id": "chatcmpl-local",
+            "object": "chat.completion.chunk",
+            "created": 1_789_000_000,
+            "model": model,
+            "system_fingerprint": "lmstudio-build",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": f"step-{index}"},
+                    "logprobs": None,
+                    "finish_reason": None,
+                }
+            ],
+        }
+        for index in range(700)
+    ]
+    frames = [
+        *reasoning_frames,
+        {
+            "id": "chatcmpl-local",
+            "object": "chat.completion.chunk",
+            "created": 1_789_000_000,
+            "model": model,
+            "choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}],
+        },
+    ]
+    content = b"".join(f"data: {json.dumps(frame)}\n\n".encode() for frame in frames)
+    assert len(content) > 256_000
+    limits = Limits(max_output_chars=1_000, max_output_tokens=1_024)
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", model, False, True, limits),
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, stream=FragmentedStream(content))
+            )
+        ),
+    )
+
+    async def run() -> CompletionResult:
+        emitted: list[str] = []
+
+        async def emit(delta: str) -> None:
+            emitted.append(delta)
+
+        result = await adapter.complete_streaming(
+            Invocation((Message("user", "hi"),), (), limits), emit
+        )
+        assert emitted == ["done"]
+        return result
+
+    assert asyncio.run(run()).text == "done"
+
+
+def test_streaming_request_fields_are_inside_the_input_character_bound() -> None:
+    profile = ModelProfile("profile", "provider", "model", False, True)
+    roomy = Invocation((Message("user", "hi"),), (), Limits(max_input_chars=10_000))
+    plain_body = chat_body(profile, roomy)
+    plain_chars = len(json.dumps(plain_body, ensure_ascii=False, allow_nan=False))
+    bounded = Invocation(
+        roomy.messages,
+        roomy.tools,
+        Limits(max_input_chars=plain_chars),
+    )
+    assert chat_body(profile, bounded)["stream"] is False
+    with pytest.raises(RuntimeFailure) as caught:
+        chat_body(profile, bounded, stream=True)
+    assert caught.value.code == "input_limit_exceeded"
+
+
+def test_lm_studio_stream_assembles_tool_calls_without_exposing_them_as_text() -> None:
+    frames = [
+        {
+            "model": "model",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {"name": "look", "arguments": '{"id":'},
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+        {
+            "model": "model",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"name": "up", "arguments": "1}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        },
+    ]
+    content = b"".join(f"data: {json.dumps(frame)}\n\n".encode() for frame in frames)
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, stream=FragmentedStream(content))
+            )
+        )
+
+    connection = ProviderConnection(
+        "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+    )
+    adapter = LMStudioAdapter(
+        connection,
+        ModelProfile("profile", "provider", "model", False, True),
+        factory,
+    )
+
+    async def run() -> tuple[CompletionResult, list[str]]:
+        deltas: list[str] = []
+
+        async def emit(delta: str) -> None:
+            deltas.append(delta)
+
+        result = await adapter.complete_streaming(
+            Invocation(
+                (Message("user", "hi"),),
+                (
+                    ToolDefinition(
+                        "lookup",
+                        "Look up a record",
+                        {"type": "object", "properties": {"id": {"type": "integer"}}},
+                    ),
+                ),
+                Limits(),
+            ),
+            emit,
+        )
+        return result, deltas
+
+    result, deltas = asyncio.run(run())
+    assert deltas == []
+    assert result.tool_requests[0].name == "lookup"
+    assert result.tool_requests[0].arguments == {"id": 1}
+
+
+@pytest.mark.parametrize(
+    "frame,limits,expected_code",
+    [
+        (
+            {
+                "model": "model",
+                "choices": [{"index": 0, "delta": {"content": "x"}, "finish_reason": "length"}],
+            },
+            Limits(),
+            "provider_incomplete",
+        ),
+        (
+            {
+                "model": "model",
+                "choices": [
+                    {"index": 0, "delta": {"refusal": "not available"}, "finish_reason": "stop"}
+                ],
+            },
+            Limits(),
+            "provider_refused",
+        ),
+        (
+            {
+                "model": "wrong",
+                "choices": [{"index": 0, "delta": {"content": "x"}, "finish_reason": "stop"}],
+            },
+            Limits(),
+            "provider_model_mismatch",
+        ),
+        (
+            {
+                "model": "model",
+                "choices": [
+                    {"index": 0, "delta": {"content": "too long"}, "finish_reason": "stop"}
+                ],
+            },
+            Limits(max_output_chars=3),
+            "output_limit_exceeded",
+        ),
+    ],
+)
+def test_lm_studio_stream_failures_remain_explicit(
+    frame: dict[str, object], limits: Limits, expected_code: str
+) -> None:
+    content = f"data: {json.dumps(frame)}\n\n".encode()
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, stream=FragmentedStream(content))
+            )
+        )
+
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", "model", False, True),
+        factory,
+    )
+
+    async def run() -> None:
+        async def emit(_delta: str) -> None:
+            return None
+
+        with pytest.raises(RuntimeFailure) as caught:
+            await adapter.complete_streaming(Invocation((Message("user", "hi"),), (), limits), emit)
+        assert caught.value.code == expected_code
+
+    asyncio.run(run())
+
+
+def test_lm_studio_stream_rejects_malformed_sse_data() -> None:
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, stream=FragmentedStream(b"data: not-json\n\n"))
+            )
+        )
+
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", "model", False, True),
+        factory,
+    )
+
+    async def run() -> None:
+        async def emit(_delta: str) -> None:
+            return None
+
+        with pytest.raises(RuntimeFailure) as caught:
+            await adapter.complete_streaming(
+                Invocation((Message("user", "hi"),), (), Limits()), emit
+            )
+        assert caught.value.code == "invalid_provider_response"
+
+    asyncio.run(run())
+
+
+def test_only_lm_studio_claims_streaming_in_current_provider_scope() -> None:
+    assert LMStudioAdapter(
+        ProviderConnection(
+            "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "local", "model", False, True),
+    ).capabilities.token_streaming
+    for driver, adapter_type, command in [
+        ("codex_cli", CodexAdapter, "codex"),
+        ("claude_cli", ClaudeAdapter, "claude"),
+        ("grok_cli", GrokAdapter, "grok"),
+    ]:
+        adapter = adapter_type(
+            ProviderConnection("provider", driver, ProcessingClass.EXTERNAL, command=command),
+            ModelProfile("profile", "provider", "model", True, False),
+        )
+        assert adapter.capabilities.token_streaming is False
+    assert (
+        OpenRouterAdapter(
+            ProviderConnection(
+                "hosted",
+                "openrouter",
+                ProcessingClass.EXTERNAL,
+                endpoint="https://openrouter.ai/api/v1",
+                credential_ref="env://LAR_TEST_KEY",
+                upstream="anthropic",
+            ),
+            ModelProfile("hosted", "hosted", "anthropic/model", True, False),
+        ).capabilities.token_streaming
+        is False
+    )
 
 
 def test_process_output_is_bounded(tmp_path: Path) -> None:

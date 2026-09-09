@@ -592,6 +592,13 @@ export class SessionCoordinator {
   private normalizeRuntimeEvent(record: SessionRecord, event: SessionEvent): void {
     if (event.type === "provider_started") {
       this.addEvent(record, "model_working", {});
+    } else if (event.type === "assistant_text_delta") {
+      const round = event.payload.round;
+      const delta = event.payload.delta;
+      if (!Number.isSafeInteger(round) || Number(round) < 1 || typeof delta !== "string" || !delta) {
+        throw new HostError("invalid_runtime_event", 502);
+      }
+      this.addEvent(record, "assistant_text_delta", { round, delta });
     } else if (event.type === "tool_requests") {
       const requests = Array.isArray(event.payload.requests) ? event.payload.requests : [];
       this.addEvent(record, "tools_requested", {

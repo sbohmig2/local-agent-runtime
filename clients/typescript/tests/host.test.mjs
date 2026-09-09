@@ -44,7 +44,7 @@ class FakeRuntime {
   profileSignals = [];
 
   async health() {
-    return { status: "available", package_version: "0.4.0", api_version: "1.3.0" };
+    return { status: "available", package_version: "0.5.0", api_version: "1.4.0" };
   }
 
   async profiles(includeHealth = false, signal = undefined, includeDiscovery = false) {
@@ -252,6 +252,18 @@ class FakeCatalog {
   async close() {}
 }
 
+class DeltaRuntime extends FakeRuntime {
+  async *streamEvents() {
+    if (this.phase !== "idle") return;
+    yield this.event(1, "session_created", {});
+    yield this.event(2, "provider_started", {});
+    yield this.event(3, "assistant_text_delta", { round: 1, delta: "One " });
+    yield this.event(4, "assistant_text_delta", { round: 1, delta: "record found." });
+    yield this.event(5, "session_completed", { text: "One record found." });
+    this.phase = "completed";
+  }
+}
+
 function authorizePrivate(request, profile) {
   if (request.privateProcessing !== true || !profile.privateProcessingEligible) {
     return "deny";
@@ -310,6 +322,22 @@ test("synthetic session executes only a doubly permitted tool and completes", as
   assert.deepEqual(
     host.events(started.id).map((event) => event.sequence),
     [1, 2, 3, 4, 5, 6]
+  );
+});
+
+test("assistant text deltas retain runtime order and payload through the host", async () => {
+  const host = coordinator(new DeltaRuntime());
+  const started = await host.start({ prompt: "List records.", privateProcessing: true });
+  const completed = await host.waitForSettled(started.id);
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(
+    host.events(started.id)
+      .filter((event) => event.type === "assistant_text_delta")
+      .map((event) => event.detail),
+    [
+      { round: 1, delta: "One " },
+      { round: 1, delta: "record found." }
+    ]
   );
 });
 
@@ -687,7 +715,7 @@ test("HTTP adapter rejects non-literal-loopback binds at runtime", () => {
 test("SSE connects while idle and host shutdown closes the stream", async () => {
   const agent = {
     async health() {
-      return { status: "available", runtimeVersion: "0.4.0", apiVersion: "1.3.0" };
+      return { status: "available", runtimeVersion: "0.5.0", apiVersion: "1.4.0" };
     },
     async profiles() {
       return { selectedProfile: "local", profiles: [] };

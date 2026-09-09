@@ -50,6 +50,9 @@ MAX_TOOLS = 128
 MAX_EVENTS = 512
 MAX_TOOL_RESULT_CHARS = 100_000
 PROBE_TIMEOUT_SECONDS: float = 20
+STREAM_EVENT_CHARS = 128
+STREAM_EVENT_BUDGET = 256
+TERMINAL_EVENT_TYPES = frozenset({"session_completed", "session_failed", "session_canceled"})
 
 
 @dataclass
@@ -72,6 +75,7 @@ class SessionRecord:
     events: list[SessionEvent] = field(default_factory=list)
     pending_tools: dict[str, ToolRequest] = field(default_factory=dict)
     tool_rounds: int = 0
+    provider_calls: int = 0
     final_text: str | None = None
     failure: dict[str, str] | None = None
     effective_model: str | None = None
@@ -86,7 +90,8 @@ class SessionRecord:
         self.updated_at = utc_now()
         if self.status in {SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELED}:
             self.finished_at = self.updated_at
-        if len(self.events) >= MAX_EVENTS:
+        event_limit = MAX_EVENTS if event_type in TERMINAL_EVENT_TYPES else MAX_EVENTS - 1
+        if len(self.events) >= event_limit:
             raise RuntimeFailure("event_limit_exceeded", "The session event limit was reached")
         self.events.append(SessionEvent(len(self.events) + 1, event_type, utc_now(), payload or {}))
 
@@ -125,6 +130,63 @@ class SessionRecord:
             "validation": self.validation,
             "event_count": len(self.events),
         }
+
+
+class _TextDeltaEmitter:
+    """Coalesce native fragments while keeping first-text latency and event count bounded."""
+
+    def __init__(self, record: SessionRecord) -> None:
+        self.record = record
+        self.round = record.provider_calls
+        self.pending = ""
+        self.text_parts: list[str] = []
+        self.text_chars = 0
+        self.emitted_once = False
+        self.emitted_events = 0
+        self.event_budget = min(
+            STREAM_EVENT_BUDGET,
+            MAX_EVENTS - len(record.events) - 1,
+        )
+        if self.event_budget < 2:
+            raise RuntimeFailure("event_limit_exceeded", "The session event limit was reached")
+        remaining_chars = record.profile.limits.max_output_chars - record.output_chars
+        later_event_budget = self.event_budget - 1
+        self.chunk_chars = max(
+            STREAM_EVENT_CHARS,
+            (remaining_chars + later_event_budget - 1) // later_event_budget,
+        )
+
+    async def push(self, delta: str) -> None:
+        if not isinstance(delta, str) or not delta:
+            raise RuntimeFailure(
+                "invalid_provider_response",
+                "The provider returned an invalid text fragment",
+                status_code=502,
+            )
+        if (
+            self.record.output_chars + self.text_chars + len(delta)
+            > self.record.profile.limits.max_output_chars
+        ):
+            raise RuntimeFailure("output_limit_exceeded", "The session output exceeds its limit")
+        self.text_parts.append(delta)
+        self.text_chars += len(delta)
+        self.pending += delta
+        if not self.emitted_once or len(self.pending) >= self.chunk_chars:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self.pending:
+            return
+        if self.emitted_events >= self.event_budget:
+            raise RuntimeFailure("event_limit_exceeded", "The session event limit was reached")
+        self.record.add_event("assistant_text_delta", {"round": self.round, "delta": self.pending})
+        self.pending = ""
+        self.emitted_once = True
+        self.emitted_events += 1
+
+    @property
+    def text(self) -> str:
+        return "".join(self.text_parts)
 
 
 class RuntimeService:
@@ -756,6 +818,7 @@ class RuntimeService:
         self._ensure_schedulable(record, record.messages)
         record.status = SessionStatus.RUNNING
         record.finished_at = None
+        record.provider_calls += 1
         record.add_event("provider_started")
         record.task = asyncio.create_task(self._advance(record))
 
@@ -775,15 +838,34 @@ class RuntimeService:
         adapter = self.provider_factory(record.connection, record.profile)
         try:
             async with asyncio.timeout(record.profile.limits.timeout_seconds):
-                result = await adapter.complete(
-                    Invocation(
-                        tuple(record.messages),
-                        record.tools,
-                        record.profile.limits,
-                        record.output_schema,
-                        record.requested_reasoning_effort,
-                    )
+                invocation = Invocation(
+                    tuple(record.messages),
+                    record.tools,
+                    record.profile.limits,
+                    record.output_schema,
+                    record.requested_reasoning_effort,
                 )
+                complete_streaming = getattr(adapter, "complete_streaming", None)
+                if record.output_schema is None and adapter.capabilities.token_streaming:
+                    if not callable(complete_streaming):
+                        raise RuntimeFailure(
+                            "invalid_provider_contract",
+                            "The provider advertises streaming without implementing it",
+                            status_code=502,
+                        )
+                    emitter = _TextDeltaEmitter(record)
+                    try:
+                        result = await complete_streaming(invocation, emitter.push)
+                    finally:
+                        emitter.flush()
+                    if result.text != emitter.text:
+                        raise RuntimeFailure(
+                            "invalid_provider_response",
+                            "The provider's streamed and completed text differ",
+                            status_code=502,
+                        )
+                else:
+                    result = await adapter.complete(invocation)
             record.effective_model = result.effective_model
             record.effective_upstream = result.effective_upstream
             record.effective_reasoning_effort = result.effective_reasoning_effort
@@ -966,11 +1048,16 @@ class RuntimeService:
             record.task.cancel()
             with suppress(asyncio.CancelledError):
                 await record.task
-        if record.public_dict()["status"] != SessionStatus.CANCELED.value:
-            record.status = SessionStatus.CANCELED
-            record.pending_tools = {}
-            record.validation = "not_validated"
-            record.add_event("session_canceled")
+        if record.status in {
+            SessionStatus.COMPLETED,
+            SessionStatus.FAILED,
+            SessionStatus.CANCELED,
+        }:
+            return record.public_dict()
+        record.status = SessionStatus.CANCELED
+        record.pending_tools = {}
+        record.validation = "not_validated"
+        record.add_event("session_canceled")
         return record.public_dict()
 
     async def shutdown(self) -> None:

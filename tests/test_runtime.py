@@ -30,6 +30,7 @@ from local_agent_runtime.contracts import (
     ProviderHealth,
     ReasoningEffort,
     RuntimeConfiguration,
+    SessionStatus,
     ToolDefinition,
     ToolRequest,
     ToolResult,
@@ -37,6 +38,7 @@ from local_agent_runtime.contracts import (
 from local_agent_runtime.embeddings import EmbeddingProfile, EmbeddingResult, EmbeddingService
 from local_agent_runtime.errors import RuntimeFailure
 from local_agent_runtime.gateway import create_app
+from local_agent_runtime.ports import TextDeltaSink
 from local_agent_runtime.providers import build_provider
 from local_agent_runtime.service import RuntimeService
 from local_agent_runtime.version import PACKAGE_VERSION
@@ -109,6 +111,47 @@ class FakeProvider:
         return replace(self.result, effective_reasoning_effort=invocation.reasoning_effort)
 
 
+class StreamingFakeProvider(FakeProvider):
+    capabilities = Capabilities(token_streaming=True, reasoning_effort_control=True)
+
+    def __init__(self, connection: ProviderConnection, profile: ModelProfile) -> None:
+        super().__init__(connection, profile)
+        self.deltas: list[str] = ["answer"]
+        self.streaming_calls = 0
+        self.block: asyncio.Event | None = None
+
+    async def complete_streaming(
+        self, invocation: Invocation, emit_text: TextDeltaSink
+    ) -> CompletionResult:
+        self.streaming_calls += 1
+        self.invocations.append(invocation)
+        for delta in self.deltas:
+            await emit_text(delta)
+        if self.block is not None:
+            await self.block.wait()
+        return self.result
+
+
+class MissingStreamingMethodProvider(FakeProvider):
+    capabilities = Capabilities(token_streaming=True)
+
+
+def streaming_runtime(
+    tmp_path: Path, limits: Limits | None = None
+) -> tuple[RuntimeService, StreamingFakeProvider]:
+    connection = ProviderConnection(
+        "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+    )
+    profile = ModelProfile("reason", "local", "model", False, True, limits or Limits())
+    config = RuntimeConfiguration(
+        {"local": connection}, {"reason": profile}, "reason", {"answer": "reason"}
+    )
+    fake = StreamingFakeProvider(connection, profile)
+    return RuntimeService(
+        config, SelectionStore(tmp_path / "state"), provider_factory=lambda *_: fake
+    ), fake
+
+
 def runtime(tmp_path: Path) -> tuple[RuntimeService, FakeProvider]:
     connection = ProviderConnection(
         "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
@@ -123,6 +166,225 @@ def runtime(tmp_path: Path) -> tuple[RuntimeService, FakeProvider]:
     ), fake
 
 
+def test_streaming_provider_emits_ordered_coalesced_text_before_completion(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path)
+        fake.deltas = ["a", "b" * 64, "c" * 64]
+        fake.result = CompletionResult("a" + "b" * 64 + "c" * 64, (), "model")
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed"
+        events = app.events(created["id"])
+        deltas = [event for event in events if event["type"] == "assistant_text_delta"]
+        assert [event["payload"] for event in deltas] == [
+            {"round": 1, "delta": "a"},
+            {"round": 1, "delta": "b" * 64 + "c" * 64},
+        ]
+        assert "assistant_text_delta" in [event["type"] for event in events]
+        assert [event["type"] for event in events][-1] == "session_completed"
+        assert "".join(event["payload"]["delta"] for event in deltas) == settled["final_text"]
+
+    asyncio.run(run())
+
+
+def test_streaming_mismatch_fails_without_fabricating_completion(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path)
+        fake.deltas = ["partial"]
+        fake.result = CompletionResult("different", (), "model")
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "failed"
+        assert settled["final_text"] is None
+        assert settled["failure"]["code"] == "invalid_provider_response"
+        assert [event["type"] for event in app.events(created["id"])] == [
+            "session_created",
+            "provider_started",
+            "assistant_text_delta",
+            "session_failed",
+        ]
+
+    asyncio.run(run())
+
+
+def test_structured_output_uses_non_streaming_completion_path(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path)
+        fake.result = CompletionResult('{"value":1}', (), "model")
+        created = await app.create_session(
+            "hello",
+            output_schema={
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+        )
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed"
+        assert fake.streaming_calls == 0
+        assert all(event["type"] != "assistant_text_delta" for event in app.events(created["id"]))
+
+    asyncio.run(run())
+
+
+def test_cancel_after_streamed_text_preserves_delta_without_completion(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path)
+        fake.deltas = ["partial"]
+        fake.block = asyncio.Event()
+        created = await app.create_session("hello")
+        for _ in range(100):
+            if any(event["type"] == "assistant_text_delta" for event in app.events(created["id"])):
+                break
+            await asyncio.sleep(0)
+        canceled = await app.cancel(created["id"])
+        assert canceled["status"] == "canceled"
+        assert canceled["final_text"] is None
+        assert [event["type"] for event in app.events(created["id"])] == [
+            "session_created",
+            "provider_started",
+            "assistant_text_delta",
+            "session_canceled",
+        ]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("deltas", "expected_code"),
+    [
+        ([""], "invalid_provider_response"),
+        (["x" * 1_001], "output_limit_exceeded"),
+    ],
+)
+def test_streaming_service_rejects_invalid_or_cumulatively_oversized_deltas(
+    tmp_path: Path, deltas: list[str], expected_code: str
+) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path, Limits(max_output_chars=1_000))
+        fake.deltas = deltas
+        fake.result = CompletionResult("".join(deltas), (), "model")
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "failed"
+        assert settled["failure"]["code"] == expected_code
+        assert app.events(created["id"])[-1]["type"] == "session_failed"
+
+    asyncio.run(run())
+
+
+def test_streaming_capability_without_method_fails_explicitly(tmp_path: Path) -> None:
+    async def run() -> None:
+        connection = ProviderConnection(
+            "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        )
+        profile = ModelProfile("reason", "local", "model", False, True)
+        config = RuntimeConfiguration(
+            {"local": connection}, {"reason": profile}, "reason", {"answer": "reason"}
+        )
+        fake = MissingStreamingMethodProvider(connection, profile)
+        app = RuntimeService(
+            config, SelectionStore(tmp_path / "state"), provider_factory=lambda *_: fake
+        )
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "failed"
+        assert settled["failure"]["code"] == "invalid_provider_contract"
+        assert [event["type"] for event in app.events(created["id"])] == [
+            "session_created",
+            "provider_started",
+            "session_failed",
+        ]
+
+    asyncio.run(run())
+
+
+def test_streaming_round_counts_tool_and_follow_up_provider_calls(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path)
+        fake.deltas = ["checking"]
+        fake.result = CompletionResult(
+            "checking", (ToolRequest("one", "lookup", {"id": 1}),), "model"
+        )
+        created = await app.create_session("first", [TOOL])
+        waiting = await app.wait(created["id"])
+        assert waiting["status"] == "waiting_for_tool"
+
+        fake.deltas = ["tool answer"]
+        fake.result = CompletionResult("tool answer", (), "model")
+        await app.submit_tool_results(created["id"], [ToolResult("one", "lookup", {"value": 1})])
+        await app.wait(created["id"])
+
+        fake.deltas = ["follow-up"]
+        fake.result = CompletionResult("follow-up", (), "model")
+        await app.continue_session(created["id"], "second")
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed"
+        deltas = [
+            event["payload"]
+            for event in app.events(created["id"])
+            if event["type"] == "assistant_text_delta"
+        ]
+        assert deltas == [
+            {"round": 1, "delta": "checking"},
+            {"round": 2, "delta": "tool answer"},
+            {"round": 3, "delta": "follow-up"},
+        ]
+
+    asyncio.run(run())
+
+
+def test_maximum_configured_stream_output_preserves_terminal_event(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path, Limits(max_output_chars=100_000))
+        fake.deltas = ["x"] * 100_000
+        fake.result = CompletionResult("x" * 100_000, (), "model")
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        events = app.events(created["id"])
+        delta_events = [event for event in events if event["type"] == "assistant_text_delta"]
+        assert settled["status"] == "failed"
+        assert settled["failure"]["code"] == "output_limit_exceeded"
+        assert len(delta_events) <= service_module.STREAM_EVENT_BUDGET
+        assert len(events) <= service_module.MAX_EVENTS
+        assert events[-1]["type"] == "session_failed"
+        assert "".join(event["payload"]["delta"] for event in delta_events) == "x" * 100_000
+
+    asyncio.run(run())
+
+
+def test_cancel_does_not_overwrite_completion_at_the_exact_event_limit(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, _ = streaming_runtime(tmp_path)
+        created = await app.create_session("hello")
+        await app.wait(created["id"])
+        record = app.sessions[created["id"]]
+        seed = record.events[0]
+        record.events = [
+            replace(seed, sequence=index, type="provider_started")
+            for index in range(1, service_module.MAX_EVENTS)
+        ]
+        record.status = SessionStatus.RUNNING
+        record.finished_at = None
+
+        class CompletionRaceTask:
+            def done(self) -> bool:
+                record.status = SessionStatus.COMPLETED
+                record.add_event("session_completed", {"text": "answer"})
+                return True
+
+        record.task = cast("asyncio.Task[None]", CompletionRaceTask())
+        settled = await app.cancel(created["id"])
+        assert settled["status"] == "completed"
+        assert len(record.events) == service_module.MAX_EVENTS
+        assert record.events[-1].type == "session_completed"
+
+    asyncio.run(run())
+
+
 def assert_schema(name: str, data: object) -> None:
     schema = {**SCHEMAS[name], "components": {"schemas": SCHEMAS}}
     Draft202012Validator(schema).validate(data)
@@ -134,7 +396,9 @@ def test_shared_conformance_fixture() -> None:
     )
     assert_schema("ErrorResponse", fixture["error"])
     assert_schema("EventsResponse", {"events": fixture["events"]})
-    assert [event["sequence"] for event in fixture["events"]] == [1, 2]
+    assert [event["sequence"] for event in fixture["events"]] == [1, 2, 3]
+    assert fixture["events"][1]["type"] == "assistant_text_delta"
+    assert fixture["events"][1]["payload"] == {"round": 1, "delta": "Grüße"}
 
 
 def test_gateway_heartbeats_keep_idle_stream_alive_without_runtime_events(
@@ -172,6 +436,34 @@ def test_gateway_heartbeats_keep_idle_stream_alive_without_runtime_events(
                 headers={"Authorization": f"Bearer {TOKEN}", "Accept": "text/event-stream"},
             )
             assert settled.text == ""
+
+    asyncio.run(run())
+
+
+def test_gateway_sse_preserves_assistant_delta_sequence_and_cursor(tmp_path: Path) -> None:
+    async def run() -> None:
+        service, fake = streaming_runtime(tmp_path)
+        fake.deltas = ["first", " second"]
+        fake.result = CompletionResult("first second", (), "model")
+        app = create_app(service, bearer_token=TOKEN)
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            created = await service.create_session("hello")
+            await service.wait(created["id"])
+            response = await client.get(
+                f"/v1/sessions/{created['id']}/events?after=2",
+                headers={"Authorization": f"Bearer {TOKEN}", "Accept": "text/event-stream"},
+            )
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert [event["sequence"] for event in events] == [3, 4, 5]
+        assert events[0]["type"] == "assistant_text_delta"
+        assert events[0]["payload"] == {"round": 1, "delta": "first"}
+        assert events[1]["payload"] == {"round": 1, "delta": " second"}
+        assert events[2]["type"] == "session_completed"
 
     asyncio.run(run())
 

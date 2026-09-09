@@ -1,11 +1,18 @@
 """LM Studio reasoning adapter and local model-catalog semantics."""
 
+import json
 from collections.abc import Mapping
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import ClassVar
 
-from local_agent_runtime.adapters.chat_codec import chat_body, decode_chat
-from local_agent_runtime.adapters.http_transport import ClientFactory, default_client, request_json
+from local_agent_runtime.adapters.chat_codec import ChatStreamDecoder, chat_body, decode_chat
+from local_agent_runtime.adapters.http_transport import (
+    ClientFactory,
+    default_client,
+    request_json,
+    stream_json_sse,
+)
 from local_agent_runtime.configuration import validate_connection
 from local_agent_runtime.contracts import (
     Capabilities,
@@ -21,7 +28,31 @@ from local_agent_runtime.contracts import (
     ReasoningEffort,
 )
 from local_agent_runtime.errors import RuntimeFailure
+from local_agent_runtime.ports import TextDeltaSink
 from local_agent_runtime.reasoning import resolve_efforts
+
+# LM Studio may send one JSON/SSE frame per generated token and repeats the
+# model identity in each frame. The per-token allowance covers its observed
+# OpenAI envelope plus a bounded text/reasoning fragment; visible text also gets
+# the worst JSON escape expansion independently. Extra frames cover role,
+# terminal, usage, and stream sentinels that do not represent output tokens.
+SSE_FIXED_BYTES = 64_000
+SSE_JSON_BYTES_PER_TEXT_CHAR = 6
+SSE_FRAME_METADATA_BYTES = 512
+SSE_TOKEN_PAYLOAD_BYTES = 256
+SSE_EXTRA_FRAMES = 8
+
+
+def _stream_response_limit(profile: ModelProfile, invocation: Invocation) -> int:
+    """Bound native chunks, including repeated identity and non-display token frames."""
+
+    model_identity_bytes = len(json.dumps(profile.model, ensure_ascii=True).encode("utf-8"))
+    frame_bytes = SSE_FRAME_METADATA_BYTES + SSE_TOKEN_PAYLOAD_BYTES + model_identity_bytes
+    return (
+        SSE_FIXED_BYTES
+        + invocation.limits.max_output_chars * SSE_JSON_BYTES_PER_TEXT_CHAR
+        + (invocation.limits.max_output_tokens + SSE_EXTRA_FRAMES) * frame_bytes
+    )
 
 
 @dataclass
@@ -47,6 +78,7 @@ class LMStudioAdapter:
     @property
     def capabilities(self) -> Capabilities:
         return Capabilities(
+            token_streaming=True,
             token_limit_control=True,
             model_discovery=True,
             reasoning_effort_control=bool(self.reasoning_efforts),
@@ -208,7 +240,38 @@ class LMStudioAdapter:
             max_bytes=max(64_000, invocation.limits.max_output_chars * 6),
             body=chat_body(self.profile, invocation),
         )
-        result = decode_chat(payload, invocation)
+        return self._checked_result(decode_chat(payload, invocation))
+
+    async def complete_streaming(
+        self, invocation: Invocation, emit_text: TextDeltaSink
+    ) -> CompletionResult:
+        if (
+            invocation.reasoning_effort is not None
+            and invocation.reasoning_effort not in self.reasoning_efforts
+        ):
+            raise RuntimeFailure(
+                "reasoning_effort_unsupported",
+                "The requested reasoning effort is not supported by this profile",
+            )
+        body = chat_body(self.profile, invocation, stream=True)
+        decoder = ChatStreamDecoder(invocation)
+        async with aclosing(
+            stream_json_sse(
+                self.client_factory,
+                "POST",
+                f"{self.connection.endpoint}/chat/completions",
+                headers={"Accept": "text/event-stream", "Content-Type": "application/json"},
+                timeout=invocation.limits.timeout_seconds,
+                max_bytes=_stream_response_limit(self.profile, invocation),
+                body=body,
+            )
+        ) as frames:
+            async for payload in frames:
+                for delta in decoder.accept(payload):
+                    await emit_text(delta)
+        return self._checked_result(decoder.complete())
+
+    def _checked_result(self, result: CompletionResult) -> CompletionResult:
         if result.effective_model is not None and result.effective_model != self.profile.model:
             raise RuntimeFailure(
                 "provider_model_mismatch",

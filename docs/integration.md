@@ -140,6 +140,24 @@ import {
 } from "@local-agent-runtime/client/host";
 ```
 
+## Assistant text events
+
+A profile whose `capabilities.token_streaming` is true may emit
+`assistant_text_delta` events before completion. Each event contains a non-empty
+display-safe `delta` and a one-based `round`; consumers append deltas in event
+sequence order within that round. The round identifies a provider call across
+the whole session and increments for initial, post-tool, and follow-up calls.
+The TypeScript host preserves the same event name and fields.
+
+These deltas are provisional. `session_completed.text` remains the authoritative
+validated result for the final provider round. A canceled or failed session may
+have prior deltas and no final text, so the consuming product decides whether
+and how to persist or label interrupted output. It must never manufacture
+deltas by splitting a completed response. Structured-output invocations do not
+stream until a route can prove that its provisional values are display-safe.
+
+Release `0.5.0` / API `1.4.0` implements this capability for LM Studio only.
+
 Structured output is a validated data contract selected by the application.
 For example, one product may map a result to graph data and another to text or
 an action proposal. The runtime does not define components, rendering hints,
@@ -166,9 +184,9 @@ unauthenticated requests.
 
 ## Artifact compatibility
 
-The Python package and TypeScript client currently share release version 0.4.0,
-while the HTTP contract advertises API version 1.3.0. A consumer pins both
-artifacts from the same release and keeps its lockfiles. Upgrade work should:
+The current immutable Python and TypeScript release is version `0.5.0` with API
+`1.4.0`. A consumer pins both artifacts from the same release and keeps its
+lockfiles. Upgrade work should:
 
 1. install the new artifacts in a branch;
 2. regenerate or inspect the committed OpenAPI contract diff;
