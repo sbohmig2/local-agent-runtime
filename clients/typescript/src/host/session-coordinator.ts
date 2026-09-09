@@ -9,13 +9,14 @@ import type {
   ProcessingAuthorizer,
   PublicProfile,
   PublicAdapterCatalog,
+  PublicModelOptions,
   ReasoningEffort,
   RuntimePort,
   StartSessionRequest,
   ToolAuthorizer,
   ToolCatalog
 } from "./contracts.js";
-import { toPublicAdapterCatalog, toPublicProfile } from "./contracts.js";
+import { toPublicAdapterCatalog, toPublicModelOptions, toPublicProfile } from "./contracts.js";
 import { HostError, safeError } from "./errors.js";
 
 const MAX_PROMPT_CHARS = 140_000;
@@ -258,6 +259,13 @@ export class SessionCoordinator {
     return toPublicAdapterCatalog(await this.runtime.adapters(probe));
   }
 
+  async modelOptions(profileId: string): Promise<PublicModelOptions> {
+    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(profileId)) {
+      throw new HostError("invalid_request", 400);
+    }
+    return toPublicModelOptions(await this.runtime.modelOptions(profileId));
+  }
+
   async setAdapterActivation(optionId: string, enabled: boolean): Promise<PublicAdapterCatalog> {
     if (!/^[a-z][a-z0-9_-]{0,63}$/.test(optionId) || typeof enabled !== "boolean") {
       throw new HostError("invalid_request", 400);
@@ -321,6 +329,9 @@ export class SessionCoordinator {
         allow_external_processing: request.allowExternalProcessing ?? false,
         ...(request.outputSchema === undefined ? {} : { output_schema: request.outputSchema }),
         ...(effort === undefined ? {} : { reasoning_effort: effort }),
+        ...(request.modelOptionId === undefined
+          ? {}
+          : { model_option_id: request.modelOptionId }),
         tools: tools.map((tool) => ({
           name: tool.name,
           description: tool.description,
@@ -614,6 +625,7 @@ export class SessionCoordinator {
       profileId: state.profile_id,
       providerId: state.provider_id,
       requestedModel: state.requested_model,
+      modelOptionId: state.model_option_id,
       effectiveModel: state.effective_model,
       effectiveUpstream: state.effective_upstream,
       processing: state.processing,

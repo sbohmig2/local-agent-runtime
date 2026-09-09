@@ -11,7 +11,14 @@ from typing import ClassVar
 from local_agent_runtime.adapters.cli_base import CLIAdapterBase
 from local_agent_runtime.adapters.cli_environment import _copy_grok_auth, _provider_environment
 from local_agent_runtime.adapters.http_transport import response_identity, safe_usage
-from local_agent_runtime.contracts import CompletionResult, ReasoningEffort
+from local_agent_runtime.contracts import (
+    Capabilities,
+    CompletionResult,
+    DiscoveredModel,
+    ModelDiscovery,
+    ModelKind,
+    ReasoningEffort,
+)
 from local_agent_runtime.errors import RuntimeFailure, provider_unavailable
 
 # `max_turns`, `length` and `interrupted` mean the turn stopped early. Reporting
@@ -28,6 +35,25 @@ class GrokAdapter(CLIAdapterBase):
         ReasoningEffort.XHIGH,
     )
     VERIFIED_EFFORTS: ClassVar[Mapping[str, tuple[ReasoningEffort, ...]]] = {}
+    CATALOG: ClassVar[tuple[DiscoveredModel, ...]] = (
+        DiscoveredModel("grok-4.6", "Grok 4.6", ModelKind.REASONING),
+        DiscoveredModel("grok-4.5", "Grok 4.5", ModelKind.REASONING),
+    )
+
+    @property
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            model_discovery=True,
+            reasoning_effort_control=bool(self.reasoning_efforts),
+        )
+
+    async def discover_models(self) -> ModelDiscovery:
+        return ModelDiscovery(
+            supported=True,
+            models=tuple(item.model for item in self.CATALOG),
+            detail_code="maintained_catalog",
+            details=self.CATALOG,
+        )
 
     def environment(self, root: Path) -> dict[str, str]:
         environment = _provider_environment("XAI_API_KEY")

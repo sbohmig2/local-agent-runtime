@@ -7,6 +7,7 @@ import type {
   HostSession,
   PublicProfile,
   PublicAdapterCatalog,
+  PublicModelOptions,
   ReasoningEffort,
   StartSessionRequest
 } from "./contracts.js";
@@ -75,6 +76,7 @@ export interface ProductAgentPort {
     selectedProfile: string;
     profiles: PublicProfile[];
   }>;
+  modelOptions(profileId: string): Promise<PublicModelOptions>;
   selectProfile(profileId: string): Promise<{
     selectedProfile: string;
     profiles: PublicProfile[];
@@ -254,6 +256,16 @@ export class HostHttpServer {
       this.json(response, 200, await this.host.profiles(health === "true", discovery === "true"));
       return;
     }
+    const modelOptionsMatch = new RegExp(
+      `^${this.pathPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/profiles/([a-z][a-z0-9_-]{0,63})/model-options$`
+    ).exec(url.pathname);
+    if (request.method === "GET" && modelOptionsMatch !== null) {
+      exactQuery(url, new Set());
+      const profileId = modelOptionsMatch[1];
+      if (profileId === undefined) throw new HostError("invalid_request", 400);
+      this.json(response, 200, await this.host.modelOptions(profileId));
+      return;
+    }
     if (request.method === "GET" && url.pathname === `${this.pathPrefix}/adapters`) {
       exactQuery(url, new Set(["probe"]));
       const probe = url.searchParams.get("probe") ?? "false";
@@ -292,7 +304,8 @@ export class HostHttpServer {
           "taskCode",
           "privateProcessing",
           "allowExternalProcessing",
-          "reasoningEffort"
+          "reasoningEffort",
+          "modelOptionId"
         ])
       );
       if (typeof body.prompt !== "string") throw new HostError("invalid_request", 400);
@@ -307,14 +320,18 @@ export class HostHttpServer {
         ...(typeof body.allowExternalProcessing === "boolean"
           ? { allowExternalProcessing: body.allowExternalProcessing }
           : {}),
-        ...(effort === undefined ? {} : { reasoningEffort: effort })
+        ...(effort === undefined ? {} : { reasoningEffort: effort }),
+        ...(typeof body.modelOptionId === "string"
+          ? { modelOptionId: body.modelOptionId }
+          : {})
       };
       if (
         (body.profileId !== undefined && typeof body.profileId !== "string") ||
         (body.taskCode !== undefined && typeof body.taskCode !== "string") ||
         (body.privateProcessing !== undefined && typeof body.privateProcessing !== "boolean") ||
         (body.allowExternalProcessing !== undefined &&
-          typeof body.allowExternalProcessing !== "boolean")
+          typeof body.allowExternalProcessing !== "boolean") ||
+        (body.modelOptionId !== undefined && typeof body.modelOptionId !== "string")
       ) {
         throw new HostError("invalid_request", 400);
       }

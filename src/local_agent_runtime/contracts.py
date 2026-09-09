@@ -32,6 +32,12 @@ class ReasoningEffort(StrEnum):
     MAX = "max"
 
 
+class ModelKind(StrEnum):
+    REASONING = "reasoning"
+    EMBEDDING = "embedding"
+    UNKNOWN = "unknown"
+
+
 class HealthStatus(StrEnum):
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
@@ -102,6 +108,47 @@ class ModelProfile:
     qualified_tasks: tuple[str, ...] = ()
     reasoning_efforts: tuple[ReasoningEffort, ...] = ()
     default_reasoning_effort: ReasoningEffort | None = None
+    model_options: Mapping[str, ModelOptionPolicy] = field(default_factory=dict)
+    catalog_model_tasks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ModelOptionPolicy:
+    """Deployment-owned qualification for one exact provider model."""
+
+    id: str
+    model: str
+    qualified_tasks: tuple[str, ...]
+    reasoning_efforts: tuple[ReasoningEffort, ...] = ()
+    default_reasoning_effort: ReasoningEffort | None = None
+
+
+@dataclass(frozen=True)
+class DiscoveredModel:
+    """Provider-issued catalog fact, never a task qualification by itself."""
+
+    model: str
+    display_name: str
+    kind: ModelKind = ModelKind.UNKNOWN
+    reasoning_efforts: tuple[ReasoningEffort, ...] = ()
+    default_reasoning_effort: ReasoningEffort | None = None
+    loaded: bool | None = None
+    reasoning_efforts_known: bool = False
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "display_name": self.display_name,
+            "kind": self.kind.value,
+            "reasoning_efforts": [item.value for item in self.reasoning_efforts],
+            "default_reasoning_effort": (
+                self.default_reasoning_effort.value
+                if self.default_reasoning_effort is not None
+                else None
+            ),
+            "loaded": self.loaded,
+            "reasoning_efforts_known": self.reasoning_efforts_known,
+        }
 
 
 @dataclass(frozen=True)
@@ -142,6 +189,7 @@ class ModelDiscovery:
     models: tuple[str, ...] = ()
     detail_code: str | None = None
     loaded_models: tuple[str, ...] | None = None
+    details: tuple[DiscoveredModel, ...] = ()
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -153,6 +201,7 @@ class ModelDiscovery:
                 if self.loaded_models is not None
                 else {}
             ),
+            **({"details": [item.public_dict() for item in self.details]} if self.details else {}),
         }
 
 

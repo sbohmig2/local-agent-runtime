@@ -12,16 +12,28 @@
 
 | Route | Effort control | Levels the route can send | Model discovery |
 |---|---|---|---|
-| Codex | `-c model_reasoning_effort` | minimal, low, medium, high, xhigh, max | No catalog; configured identity |
-| Claude | `--effort` | low, medium, high, xhigh, max (no `minimal`) | No catalog; configured identity |
-| Grok | `--reasoning-effort` | low, medium, high, xhigh | No machine-readable catalog |
-| LM Studio | `reasoning_effort` request field | minimal, low, medium, high | Loopback `/v1/models` |
+| Codex | `-c model_reasoning_effort` | minimal, low, medium, high, xhigh, max | Structured app-server `model/list` |
+| Claude | `--effort` | low, medium, high, xhigh, max (no `minimal`) | Runtime-maintained exact catalog |
+| Grok | `--reasoning-effort` | low, medium, high, xhigh | Runtime-maintained exact catalog |
+| LM Studio | `reasoning_effort` request field | minimal, low, medium, high | Compatible plus typed native loopback catalogs |
 | OpenRouter | Out of scope for now | None | Out of scope for now |
 
-That column is what the route can transmit, not what any model supports. No model
-is qualified for an effort in this repository, so a profile publishes no options
-until its deployment declares `reasoning_efforts` for the exact model it pins. A
-declaration outside the route's column is rejected as invalid configuration.
+That column is what the route can transmit, not task qualification.
+`catalog_model_tasks` explicitly qualifies the runtime-issued reasoning catalog
+for named tasks without copying model identifiers into a consumer.
+`model_options` is the narrower alternative: it maps opaque IDs to exact models,
+qualified tasks, and optional operator-narrowed effort policy. The modes cannot
+mix. Provider discovery or a maintained catalog never creates qualification by
+itself; an option is returned only while catalog and policy match.
+
+The maintained Claude catalog currently maps `Fable 5.1` to
+`claude-fable-5-1`, `Opus 5` to `claude-opus-5`, `Sonnet 5` to
+`claude-sonnet-5`, and `Haiku 4.5` to
+`claude-haiku-4-5-20251001`. The first three publish low through max with high
+as provider default. Haiku publishes no effort selector because the documented
+model has no `effort` control. Grok maps `Grok 4.6` to `grok-4.6` and `Grok 4.5`
+to `grok-4.5`; exact effort support remains deployment evidence rather than a
+catalog claim.
 
 Codex and Claude accept an unrecognized level without failing — Claude warns and
 uses its default, Codex forwards it — so the runtime validates before dispatch

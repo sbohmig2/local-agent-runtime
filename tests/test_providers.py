@@ -616,9 +616,7 @@ def test_an_unqualified_model_inherits_no_effort_options(driver: str) -> None:
         assert adapter.VERIFIED_EFFORTS == {}
         assert adapter.reasoning_efforts == ()
         assert adapter.capabilities.reasoning_effort_control is False
-        assert adapter.capabilities.model_discovery is False
-        discovery = asyncio.run(adapter.discover_models())
-        assert discovery.supported is False and discovery.models == ()
+        assert adapter.capabilities.model_discovery is True
 
     declared = cli_adapter(
         driver,

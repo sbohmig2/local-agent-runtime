@@ -8,7 +8,14 @@ from typing import ClassVar
 from local_agent_runtime.adapters.cli_base import CLIAdapterBase
 from local_agent_runtime.adapters.cli_environment import _provider_environment
 from local_agent_runtime.adapters.process import ProcessResult
-from local_agent_runtime.contracts import CompletionResult, ReasoningEffort
+from local_agent_runtime.contracts import (
+    Capabilities,
+    CompletionResult,
+    DiscoveredModel,
+    ModelDiscovery,
+    ModelKind,
+    ReasoningEffort,
+)
 from local_agent_runtime.errors import provider_unavailable
 
 
@@ -22,6 +29,53 @@ class ClaudeAdapter(CLIAdapterBase):
         ReasoningEffort.MAX,
     )
     VERIFIED_EFFORTS: ClassVar[Mapping[str, tuple[ReasoningEffort, ...]]] = {}
+    CATALOG: ClassVar[tuple[DiscoveredModel, ...]] = (
+        DiscoveredModel(
+            "claude-fable-5-1",
+            "Fable 5.1",
+            ModelKind.REASONING,
+            TRANSPORT_EFFORTS,
+            ReasoningEffort.HIGH,
+            reasoning_efforts_known=True,
+        ),
+        DiscoveredModel(
+            "claude-opus-5",
+            "Opus 5",
+            ModelKind.REASONING,
+            TRANSPORT_EFFORTS,
+            ReasoningEffort.HIGH,
+            reasoning_efforts_known=True,
+        ),
+        DiscoveredModel(
+            "claude-sonnet-5",
+            "Sonnet 5",
+            ModelKind.REASONING,
+            TRANSPORT_EFFORTS,
+            ReasoningEffort.HIGH,
+            reasoning_efforts_known=True,
+        ),
+        DiscoveredModel(
+            "claude-haiku-4-5-20251001",
+            "Haiku 4.5",
+            ModelKind.REASONING,
+            reasoning_efforts_known=True,
+        ),
+    )
+
+    @property
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            model_discovery=True,
+            reasoning_effort_control=bool(self.reasoning_efforts),
+        )
+
+    async def discover_models(self) -> ModelDiscovery:
+        return ModelDiscovery(
+            supported=True,
+            models=tuple(item.model for item in self.CATALOG),
+            detail_code="maintained_catalog",
+            details=self.CATALOG,
+        )
 
     def environment(self, root: Path) -> dict[str, str]:
         # The CLI resolves its stored login against the invoking account name, so a

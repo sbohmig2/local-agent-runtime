@@ -39,10 +39,11 @@ class FakeRuntime {
   failAfterCreate = false;
   malformedTool = false;
   requestedEffort = null;
+  requestedModelOption = null;
   profileSignals = [];
 
   async health() {
-    return { status: "available", package_version: "0.2.1", api_version: "1.1.0" };
+    return { status: "available", package_version: "0.3.0", api_version: "1.2.0" };
   }
 
   async profiles(includeHealth = false, signal = undefined, includeDiscovery = false) {
@@ -98,8 +99,15 @@ class FakeRuntime {
     return this.profiles(false);
   }
 
+  async modelOptions(profileId) {
+    return {profile_id: profileId, supported: true, checked_at: "now", detail_code: null,
+      options: [{id: "second-choice", display_name: "Second", qualified_tasks: ["records_chat"],
+        loaded: null, reasoning: {efforts: ["high"], default: "high"}}]};
+  }
+
   async createSession(body) {
     this.requestedEffort = body.reasoning_effort ?? null;
+    this.requestedModelOption = body.model_option_id ?? null;
     this.created.push(body);
     this.phase = this.failAfterCreate ? "failed" : "idle";
     return this.state("running");
@@ -173,6 +181,7 @@ class FakeRuntime {
         : this.selected.split("-")[0],
       adapter: "hidden-driver",
       requested_model: `${this.selected}-model`,
+      model_option_id: this.requestedModelOption,
       created_at: "2026-09-07T12:00:00Z",
       updated_at: "2026-09-07T12:00:01Z",
       finished_at: ["completed", "failed", "canceled"].includes(status)
@@ -677,7 +686,7 @@ test("HTTP adapter rejects non-literal-loopback binds at runtime", () => {
 test("SSE connects while idle and host shutdown closes the stream", async () => {
   const agent = {
     async health() {
-      return { status: "available", runtimeVersion: "0.2.1", apiVersion: "1.1.0" };
+      return { status: "available", runtimeVersion: "0.3.0", apiVersion: "1.2.0" };
     },
     async profiles() {
       return { selectedProfile: "local", profiles: [] };
@@ -1072,6 +1081,24 @@ test("existing no-effort callers keep their request shape", async () => {
   assert.equal(Object.hasOwn(runtime.created[0], "reasoning_effort"), false);
   assert.equal(started.requestedReasoningEffort, null);
   assert.equal(started.effectiveReasoningEffort, null);
+});
+
+test("host maps runtime-issued model options and forwards only the opaque choice", async () => {
+  const runtime = new FakeRuntime();
+  const host = coordinator(runtime);
+  const catalog = await host.modelOptions("lm-studio-local");
+  assert.deepEqual(catalog.options[0], {
+    id: "second-choice",
+    displayName: "Second",
+    qualifiedTasks: ["records_chat"],
+    loaded: null,
+    reasoning: {efforts: ["high"], default: "high"}
+  });
+  const session = await host.start({prompt: "question", profileId: "lm-studio-local",
+    modelOptionId: "second-choice", reasoningEffort: "high", privateProcessing: true});
+  assert.equal(runtime.requestedModelOption, "second-choice");
+  assert.equal(runtime.created[0].model_option_id, "second-choice");
+  await host.cancel(session.id);
 });
 
 test("each continued turn carries its own effort", async () => {

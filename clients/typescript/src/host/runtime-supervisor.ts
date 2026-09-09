@@ -283,6 +283,10 @@ export class SupervisedRuntime implements RuntimePort {
     return (await this.supervisor.client()).profiles(includeHealth, signal, includeDiscovery);
   }
 
+  async modelOptions(profileId: string, signal?: AbortSignal) {
+    return (await this.supervisor.client()).modelOptions(profileId, signal);
+  }
+
   async selectProfile(
     body: { profile_id: string },
     signal?: AbortSignal

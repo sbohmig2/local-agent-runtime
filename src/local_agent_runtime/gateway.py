@@ -177,6 +177,14 @@ def create_app(
 
         return await invoke(request, operation)
 
+    async def model_options(request: Request) -> Response:
+        async def operation() -> dict[str, Any]:
+            if request.query_params:
+                raise invalid_request("The model-options query is invalid")
+            return await service.model_options(request.path_params["profile_id"])
+
+        return await invoke(request, operation)
+
     async def adapters(request: Request) -> Response:
         async def operation() -> dict[str, Any]:
             values = request.query_params.getlist("probe")
@@ -212,6 +220,7 @@ def create_app(
                 "allow_external_processing",
                 "output_schema",
                 "reasoning_effort",
+                "model_option_id",
             }
             if set(body) - allowed or "prompt" not in body:
                 raise invalid_request("The session request is invalid")
@@ -235,6 +244,7 @@ def create_app(
                 allow_external_processing=external,
                 output_schema=body.get("output_schema"),
                 reasoning_effort=body.get("reasoning_effort"),
+                model_option_id=body.get("model_option_id"),
             )
 
         return await invoke(request, operation)
@@ -366,6 +376,7 @@ def create_app(
             Route("/v1/embeddings", embed, methods=["POST"]),
             Route("/v1/health", health, methods=["GET"]),
             Route("/v1/profiles", profiles, methods=["GET"]),
+            Route("/v1/profiles/{profile_id}/model-options", model_options, methods=["GET"]),
             Route("/v1/adapters", adapters, methods=["GET"]),
             Route("/v1/adapter-activation", adapter_activation, methods=["POST"]),
             Route("/v1/selection", select_profile, methods=["POST"]),

@@ -13,6 +13,7 @@ import yaml
 
 from local_agent_runtime.contracts import (
     Limits,
+    ModelOptionPolicy,
     ModelProfile,
     ProcessingClass,
     ProviderConnection,
@@ -210,6 +211,73 @@ def _default_reasoning_effort(profile_id: str, value: Any) -> ReasoningEffort | 
         ) from None
 
 
+def _model(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 256
+        or value.startswith("-")
+        or any(ord(char) < 32 for char in value)
+    ):
+        raise invalid_configuration(f"{label} is invalid")
+    return value
+
+
+def _model_options(profile_id: str, value: Any) -> Mapping[str, ModelOptionPolicy]:
+    raw_options = _mapping({} if value is None else value, f"Profile {profile_id} model options")
+    if len(raw_options) > 512:
+        raise invalid_configuration(f"Profile {profile_id} has too many model options")
+    options: dict[str, ModelOptionPolicy] = {}
+    models: set[str] = set()
+    for raw_id, value in raw_options.items():
+        option_id = _identifier(raw_id, f"Profile {profile_id} model option identifier")
+        raw = _mapping(value, f"Profile {profile_id} model option {option_id}")
+        allowed = {
+            "model",
+            "qualified_tasks",
+            "reasoning_efforts",
+            "default_reasoning_effort",
+        }
+        if set(raw) - allowed or not {"model", "qualified_tasks"} <= set(raw):
+            raise invalid_configuration(
+                f"Profile {profile_id} model option {option_id} fields are invalid"
+            )
+        model = _model(raw.get("model"), f"Profile {profile_id} model option model")
+        if model in models:
+            raise invalid_configuration(f"Profile {profile_id} repeats a model option")
+        tasks = raw.get("qualified_tasks")
+        if (
+            not isinstance(tasks, list)
+            or not tasks
+            or any(not isinstance(item, str) or not IDENTIFIER.fullmatch(item) for item in tasks)
+            or len(set(tasks)) != len(tasks)
+        ):
+            raise invalid_configuration(
+                f"Profile {profile_id} model option {option_id} qualified tasks are invalid"
+            )
+        efforts = _reasoning_efforts(
+            f"{profile_id} model option {option_id}", raw.get("reasoning_efforts")
+        )
+        default = _default_reasoning_effort(
+            f"{profile_id} model option {option_id}", raw.get("default_reasoning_effort")
+        )
+        if default is not None and efforts and default not in efforts:
+            raise invalid_configuration(
+                f"Profile {profile_id} model option {option_id} default reasoning effort "
+                "is not declared"
+            )
+        models.add(model)
+        options[option_id] = ModelOptionPolicy(
+            option_id,
+            model,
+            tuple(tasks),
+            efforts,
+            default,
+        )
+    return options
+
+
 def load_configuration(path: Path) -> RuntimeConfiguration:
     try:
         with path.open("rb") as handle:
@@ -288,22 +356,15 @@ def load_configuration(path: Path) -> RuntimeConfiguration:
             "qualified_tasks",
             "reasoning_efforts",
             "default_reasoning_effort",
+            "model_options",
+            "catalog_model_tasks",
         }
         if set(raw) - allowed:
             raise invalid_configuration(f"Profile {profile_id} contains unsupported fields")
         provider_id = _identifier(raw.get("provider"), "Profile provider")
         if provider_id not in providers:
             raise invalid_configuration(f"Profile {profile_id} references an unknown provider")
-        model = raw.get("model")
-        if (
-            not isinstance(model, str)
-            or not model
-            or model != model.strip()
-            or len(model) > 256
-            or model.startswith("-")
-            or any(ord(char) < 32 for char in model)
-        ):
-            raise invalid_configuration(f"Profile {profile_id} model is invalid")
+        model = _model(raw.get("model"), f"Profile {profile_id} model")
         external = raw.get("allow_external_processing")
         private = raw.get("allow_private_processing", False)
         if type(external) is not bool or type(private) is not bool:
@@ -319,6 +380,21 @@ def load_configuration(path: Path) -> RuntimeConfiguration:
             or len(set(tasks)) != len(tasks)
         ):
             raise invalid_configuration(f"Profile {profile_id} qualified tasks are invalid")
+        catalog_tasks = raw.get("catalog_model_tasks", [])
+        if (
+            not isinstance(catalog_tasks, list)
+            or any(
+                not isinstance(item, str) or not IDENTIFIER.fullmatch(item)
+                for item in catalog_tasks
+            )
+            or len(set(catalog_tasks)) != len(catalog_tasks)
+        ):
+            raise invalid_configuration(f"Profile {profile_id} catalog model tasks are invalid")
+        model_options = _model_options(profile_id, raw.get("model_options"))
+        if catalog_tasks and model_options:
+            raise invalid_configuration(
+                f"Profile {profile_id} cannot mix catalog and exact model option policies"
+            )
         efforts = _reasoning_efforts(profile_id, raw.get("reasoning_efforts"))
         default_effort = _default_reasoning_effort(profile_id, raw.get("default_reasoning_effort"))
         if default_effort is not None and efforts and default_effort not in efforts:
@@ -335,6 +411,8 @@ def load_configuration(path: Path) -> RuntimeConfiguration:
             qualified_tasks=tuple(tasks),
             reasoning_efforts=efforts,
             default_reasoning_effort=default_effort,
+            model_options=model_options,
+            catalog_model_tasks=tuple(catalog_tasks),
         )
     if not profiles:
         raise invalid_configuration("At least one profile is required")

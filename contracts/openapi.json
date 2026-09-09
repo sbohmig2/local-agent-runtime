@@ -149,6 +149,76 @@
         ],
         "type": "object"
       },
+      "DiscoveredModel": {
+        "additionalProperties": false,
+        "properties": {
+          "default_reasoning_effort": {
+            "anyOf": [
+              {
+                "enum": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "reasoning",
+              "embedding",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "loaded": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "reasoning_efforts": {
+            "items": {
+              "enum": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reasoning_efforts_known": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "model",
+          "display_name",
+          "kind",
+          "reasoning_efforts",
+          "default_reasoning_effort",
+          "loaded",
+          "reasoning_efforts_known"
+        ],
+        "type": "object"
+      },
       "EmbeddingLimits": {
         "additionalProperties": false,
         "properties": {
@@ -505,6 +575,12 @@
               "null"
             ]
           },
+          "details": {
+            "items": {
+              "$ref": "#/components/schemas/DiscoveredModel"
+            },
+            "type": "array"
+          },
           "loaded_models": {
             "anyOf": [
               {
@@ -532,6 +608,74 @@
           "supported",
           "models",
           "detail_code"
+        ],
+        "type": "object"
+      },
+      "ModelOption": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "loaded": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "qualified_tasks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reasoning": {
+            "$ref": "#/components/schemas/ReasoningOptions"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "reasoning",
+          "qualified_tasks",
+          "loaded"
+        ],
+        "type": "object"
+      },
+      "ModelOptionsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at": {
+            "type": "string"
+          },
+          "detail_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/ModelOption"
+            },
+            "type": "array"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "supported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile_id",
+          "supported",
+          "checked_at",
+          "detail_code",
+          "options"
         ],
         "type": "object"
       },
@@ -811,6 +955,9 @@
           "instructions": {
             "type": "string"
           },
+          "model_option_id": {
+            "type": "string"
+          },
           "output_schema": {
             "additionalProperties": {},
             "type": "object"
@@ -920,6 +1067,12 @@
           "limits": {
             "$ref": "#/components/schemas/ReasoningLimits"
           },
+          "model_option_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "pending_tools": {
             "items": {
               "$ref": "#/components/schemas/ToolRequest"
@@ -1005,6 +1158,7 @@
           "provider_id",
           "adapter",
           "requested_model",
+          "model_option_id",
           "created_at",
           "updated_at",
           "finished_at",
@@ -1180,7 +1334,7 @@
   },
   "info": {
     "title": "Local Agent Runtime",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -1373,6 +1527,43 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProfilesResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded failure"
+          }
+        }
+      }
+    },
+    "/v1/profiles/{profile_id}/model-options": {
+      "get": {
+        "operationId": "modelOptions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelOptionsResponse"
                 }
               }
             },

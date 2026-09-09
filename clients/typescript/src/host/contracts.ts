@@ -5,6 +5,7 @@ import type {
   EmbeddingResponse,
   EventsResponse,
   HealthResponse,
+  ModelOptionsResponse,
   ProfilesResponse,
   ReasoningProfile,
   SessionEvent,
@@ -13,8 +14,8 @@ import type {
   ToolResultsRequest
 } from "../generated.js";
 
-export const RUNTIME_PACKAGE_VERSION = "0.2.1";
-export const RUNTIME_API_VERSION = "1.1.0";
+export const RUNTIME_PACKAGE_VERSION = "0.3.0";
+export const RUNTIME_API_VERSION = "1.2.0";
 
 /** Provider-neutral effort vocabulary. A profile publishes the subset it supports. */
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -64,6 +65,38 @@ export interface PublicAdapterCatalog {
   adapters: PublicAdapter[];
 }
 
+export interface PublicModelOption {
+  id: string;
+  displayName: string;
+  reasoning: ReasoningOptions;
+  qualifiedTasks: readonly string[];
+  loaded: boolean | null;
+}
+
+export interface PublicModelOptions {
+  profileId: string;
+  supported: boolean;
+  checkedAt: string;
+  detailCode: string | null;
+  options: PublicModelOption[];
+}
+
+export function toPublicModelOptions(value: ModelOptionsResponse): PublicModelOptions {
+  return {
+    profileId: value.profile_id,
+    supported: value.supported,
+    checkedAt: value.checked_at,
+    detailCode: value.detail_code,
+    options: value.options.map((item) => ({
+      id: item.id,
+      displayName: item.display_name,
+      reasoning: { efforts: [...item.reasoning.efforts], default: item.reasoning.default },
+      qualifiedTasks: [...item.qualified_tasks],
+      loaded: item.loaded
+    }))
+  };
+}
+
 export function toPublicAdapterCatalog(value: AdaptersResponse): PublicAdapterCatalog {
   return { adapters: value.adapters.map((item) => ({
     id: item.id, label: item.label, processing: item.processing, supported: item.supported,
@@ -94,6 +127,7 @@ export interface RuntimePort {
     signal?: AbortSignal,
     includeDiscovery?: boolean
   ): Promise<ProfilesResponse>;
+  modelOptions(profileId: string, signal?: AbortSignal): Promise<ModelOptionsResponse>;
   selectProfile(body: { profile_id: string }, signal?: AbortSignal): Promise<ProfilesResponse>;
   createSession(body: SessionRequest, signal?: AbortSignal): Promise<SessionResponse>;
   session(sessionId: string, signal?: AbortSignal): Promise<SessionResponse>;
@@ -196,6 +230,7 @@ export interface HostSession {
   profileId: string;
   providerId: string;
   requestedModel: string;
+  modelOptionId: string | null;
   effectiveModel: string | null;
   effectiveUpstream: string | null;
   processing: "local" | "external";
@@ -215,6 +250,7 @@ export interface StartSessionRequest {
   allowExternalProcessing?: boolean;
   outputSchema?: Record<string, unknown>;
   reasoningEffort?: ReasoningEffort;
+  modelOptionId?: string;
 }
 
 export interface ContinueSessionOptions {

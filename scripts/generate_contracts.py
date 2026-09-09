@@ -58,6 +58,8 @@ def client() -> str:
         args = []
         if "{session_id}" in path:
             args.append("sessionId: string")
+        if "{profile_id}" in path:
+            args.append("profileId: string")
         if request:
             args.append("body: " + request)
         if name == "profiles":
@@ -70,7 +72,11 @@ def client() -> str:
         if name == "profiles":
             # Appended after `signal` so `profiles(true, controller.signal)` keeps working.
             args.append("includeDiscovery = false")
-        url = json.dumps(path).replace("{session_id}", '" + encodeURIComponent(sessionId) + "')
+        url = (
+            json.dumps(path)
+            .replace("{session_id}", '" + encodeURIComponent(sessionId) + "')
+            .replace("{profile_id}", '" + encodeURIComponent(profileId) + "')
+        )
         if name == "profiles":
             url += (
                 ' + "?health=" + String(includeHealth) + "&discovery=" + String(includeDiscovery)'

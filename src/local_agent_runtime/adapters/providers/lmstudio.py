@@ -10,9 +10,11 @@ from local_agent_runtime.configuration import validate_connection
 from local_agent_runtime.contracts import (
     Capabilities,
     CompletionResult,
+    DiscoveredModel,
     HealthStatus,
     Invocation,
     ModelDiscovery,
+    ModelKind,
     ModelProfile,
     ProviderConnection,
     ProviderHealth,
@@ -86,6 +88,8 @@ class LMStudioAdapter:
         except RuntimeFailure as exc:
             return ModelDiscovery(supported=True, detail_code=exc.code)
         loaded: tuple[str, ...] | None = None
+        details: tuple[DiscoveredModel, ...] = ()
+        detail_code: str | None = None
         try:
             payload = await request_json(
                 self.client_factory,
@@ -128,10 +132,42 @@ class LMStudioAdapter:
                 )
                 if not unresolved:
                     loaded = tuple(model for model in models if model in identities)
+                    matches: dict[str, Mapping[str, object]] = {}
+                    ambiguous = False
+                    for item in native:
+                        identities_for_item = {
+                            item["key"],
+                            *[instance["id"] for instance in item["loaded_instances"]],
+                        }
+                        for model in models:
+                            if model in identities_for_item:
+                                if model in matches:
+                                    ambiguous = True
+                                matches[model] = item
+                    if not ambiguous and all(
+                        item.get("type") in {"llm", "embedding"} for item in native
+                    ):
+                        details = tuple(
+                            DiscoveredModel(
+                                model,
+                                model,
+                                ModelKind.REASONING,
+                                loaded=model in loaded,
+                            )
+                            for model in models
+                            if model in matches and matches[model]["type"] == "llm"
+                        )
+                        detail_code = None
         except RuntimeFailure:
             # Older servers expose only /v1/models: loaded state stays unknown.
             pass
-        return ModelDiscovery(supported=True, models=models, loaded_models=loaded)
+        return ModelDiscovery(
+            supported=True,
+            models=models,
+            detail_code=detail_code,
+            loaded_models=loaded,
+            details=details,
+        )
 
     async def health(self) -> ProviderHealth:
         try:

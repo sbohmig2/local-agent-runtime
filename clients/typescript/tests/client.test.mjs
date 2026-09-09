@@ -112,3 +112,24 @@ test("adapter client keeps explicit probes separate from issued-option activatio
   assert.equal(observed[2].url, "http://127.0.0.1:8765/v1/adapter-activation");
   assert.deepEqual(JSON.parse(observed[2].init.body), {option_id: "claude-approved", enabled: true});
 });
+
+test("model options use an encoded profile path and session keeps the opaque choice", async () => {
+  const observed = [];
+  const client = new RuntimeClient({baseUrl: "http://127.0.0.1:8765", bearerToken: "t".repeat(40),
+    fetch: async (url, init) => {
+      observed.push({url, init});
+      return Response.json(url.includes("model-options")
+        ? {profile_id: "profile/id", supported: true, checked_at: "now", detail_code: null,
+          options: [{id: "second-choice", display_name: "Second", qualified_tasks: ["answer"],
+            loaded: null, reasoning: {efforts: ["high"], default: "high"}}]}
+        : {id: "session"});
+    }});
+  const catalog = await client.modelOptions("profile/id");
+  assert.equal(catalog.options[0].id, "second-choice");
+  await client.createSession({prompt: "question", profile_id: "profile/id",
+    model_option_id: "second-choice", reasoning_effort: "high"});
+  assert.equal(observed[0].url,
+    "http://127.0.0.1:8765/v1/profiles/profile%2Fid/model-options");
+  assert.deepEqual(JSON.parse(observed[1].init.body), {prompt: "question", profile_id: "profile/id",
+    model_option_id: "second-choice", reasoning_effort: "high"});
+});

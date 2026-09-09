@@ -111,19 +111,36 @@ fails or times out becomes that profile's own inconclusive state with a detail
 code; it never fails the catalog, so a consumer can render the configured list
 immediately and refresh readiness separately.
 
-## Model discovery
+## Model discovery and selectable options
 
 Discovery is a third axis, separate from readiness and from task qualification.
-LM Studio enumerates available models from the same loopback `/v1/models` catalog
-its health probe uses. That catalog does not establish whether a model is loaded.
-Discovery additionally checks native `/api/v1/models`: `loaded_instances`
-establishes `loaded_models`, matched by model key or loaded instance identity.
-An older, unavailable, or malformed native API, or loaded instances whose
-identities cannot be reconciled with the compatible catalog, leaves loaded state unknown
-(the optional field is absent). See the [native API contract](https://lmstudio.ai/docs/developer/rest/list).
-CLI routes report `supported: false` rather than parsing human-facing
-listings, so their model identities stay explicitly configured. OpenRouter
-enumeration is deliberately out of scope.
+`GET /v1/profiles/{profile_id}/model-options` performs an on-demand bounded
+catalog read, then applies one explicit deployment policy. `catalog_model_tasks`
+qualifies every runtime-issued reasoning entry for named tasks without copying
+provider IDs into a consumer; exact `model_options` narrows qualification to
+listed identities when model-specific evidence requires it. The two modes cannot
+mix. A catalog entry without qualifying policy is not selectable; an exact
+policy whose model has disappeared is not returned. The
+session contract accepts only the issued option ID and resolves the catalog
+again before dispatch. Missing or changed options fail before provider invocation
+and never fall back.
+
+Codex reads the structured, paginated app-server `model/list` protocol and
+filters provider-only effort values outside this runtime vocabulary. Claude uses
+a maintained runtime catalog of exact documented model identifiers: Fable 5.1,
+Opus 5, Sonnet 5, and Haiku 4.5. Grok similarly uses a maintained catalog because
+its `grok models` command is human-facing rather than a stable machine contract.
+Maintained entries establish provider identity and display labels only; they do
+not establish installation, authentication, readiness, or task qualification.
+
+LM Studio combines the compatible loopback `/v1/models` catalog with native
+`/api/v1/models` metadata. Only entries the native response classifies as `llm`
+become reasoning options; embeddings and unknown-kind entries never do.
+`loaded_instances` establishes loaded state when native and compatible identities
+can be reconciled. An older, unavailable, malformed, or ambiguous native response
+leaves type/loaded state inconclusive. See the
+[native API contract](https://lmstudio.ai/docs/developer/rest/list). OpenRouter
+enumeration remains deliberately out of scope.
 
 ## Supported adapters and activation
 

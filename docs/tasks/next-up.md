@@ -6,6 +6,7 @@ truth.
 ## Review lane
 
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
+- [LAR-007 - Deliver runtime-issued model options](./LAR-007-deliver-runtime-issued-model-options.md)
 
 ## Queued lane
 

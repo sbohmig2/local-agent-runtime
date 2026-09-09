@@ -2,7 +2,7 @@
 
 from typing import Any
 
-API_VERSION = "1.1.0"
+API_VERSION = "1.2.0"
 
 
 def ref(name: str) -> dict[str, str]:
@@ -80,8 +80,38 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "models": array(STRING),
             "detail_code": NULLABLE_STRING,
             "loaded_models": {"anyOf": [array(STRING), {"type": "null"}]},
+            "details": array(ref("DiscoveredModel")),
         },
-        ("loaded_models",),
+        ("loaded_models", "details"),
+    ),
+    "DiscoveredModel": obj(
+        {
+            "model": STRING,
+            "display_name": STRING,
+            "kind": {"type": "string", "enum": ["reasoning", "embedding", "unknown"]},
+            "reasoning_efforts": array(REASONING_EFFORT),
+            "default_reasoning_effort": NULLABLE_REASONING_EFFORT,
+            "loaded": {"type": ["boolean", "null"]},
+            "reasoning_efforts_known": BOOL,
+        }
+    ),
+    "ModelOption": obj(
+        {
+            "id": STRING,
+            "display_name": STRING,
+            "reasoning": ref("ReasoningOptions"),
+            "qualified_tasks": array(STRING),
+            "loaded": {"type": ["boolean", "null"]},
+        }
+    ),
+    "ModelOptionsResponse": obj(
+        {
+            "profile_id": STRING,
+            "supported": BOOL,
+            "checked_at": STRING,
+            "detail_code": NULLABLE_STRING,
+            "options": array(ref("ModelOption")),
+        }
     ),
     "AdapterOption": obj(
         {
@@ -165,6 +195,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "tools": array(ref("ToolDefinition")),
             "output_schema": JSON_OBJECT,
             "reasoning_effort": REASONING_EFFORT,
+            "model_option_id": STRING,
         },
         (
             "instructions",
@@ -175,6 +206,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "tools",
             "output_schema",
             "reasoning_effort",
+            "model_option_id",
         ),
     ),
     "InputRequest": obj(
@@ -187,6 +219,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "provider_id": STRING,
             "adapter": STRING,
             "requested_model": STRING,
+            "model_option_id": NULLABLE_STRING,
             "created_at": STRING,
             "updated_at": STRING,
             "finished_at": NULLABLE_STRING,
@@ -304,6 +337,13 @@ SCHEMAS: dict[str, dict[str, Any]] = {
 OPERATIONS = (
     ("health", "get", "/v1/health", None, "HealthResponse"),
     ("profiles", "get", "/v1/profiles", None, "ProfilesResponse"),
+    (
+        "modelOptions",
+        "get",
+        "/v1/profiles/{profile_id}/model-options",
+        None,
+        "ModelOptionsResponse",
+    ),
     ("adapters", "get", "/v1/adapters", None, "AdaptersResponse"),
     (
         "setAdapterActivation",
@@ -352,11 +392,12 @@ def openapi() -> dict[str, Any]:
                 },
             },
         }
-        parameters = []
-        if "{session_id}" in path:
-            parameters.append(
-                {"name": "session_id", "in": "path", "required": True, "schema": STRING}
-            )
+        parameters: list[dict[str, Any]] = []
+        for parameter in ("session_id", "profile_id"):
+            if "{" + parameter + "}" in path:
+                parameters.append(
+                    {"name": parameter, "in": "path", "required": True, "schema": STRING}
+                )
         if name == "profiles":
             parameters.append({"name": "health", "in": "query", "schema": BOOL})
             parameters.append({"name": "discovery", "in": "query", "schema": BOOL})

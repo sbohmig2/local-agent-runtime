@@ -55,21 +55,24 @@ const profiles = await runtime.profiles(false);
 
 ## Model selection and reasoning effort
 
-A consumer renders a model selector from the configured profiles the catalog
-returns and a separate effort selector from each profile's `reasoning.efforts`.
-Both are provider-neutral: no consumer should carry provider names, CLI flags or
-effort lists of its own, and an empty `efforts` list means that profile has no
-effort control and no selector should appear.
+A consumer renders enabled agent/profile choices from `profiles`, then loads
+that profile's selectable models on demand with `modelOptions(profileId)`. It
+stores and submits the opaque option ID, display label, and one returned effort;
+it does not own provider model identifiers, CLI flags, or model catalogs. An
+empty `efforts` list means there is no effort selector for that choice.
 
 ```ts
 const { profiles } = await agent.profiles(true, true); // health, discovery
 const profile = profiles.find((item) => item.selected)!;
+const catalog = await agent.modelOptions(profile.id);
+const option = catalog.options[0]!;
 const session = await agent.start({
   prompt,
   profileId: profile.id,
-  ...(profile.reasoning.default === null
+  modelOptionId: option.id,
+  ...(option.reasoning.default === null
     ? {}
-    : { reasoningEffort: profile.reasoning.default })
+    : { reasoningEffort: option.reasoning.default })
 });
 ```
 
@@ -78,6 +81,13 @@ readiness, `discovery` reports whether the route can enumerate models and which
 ones, and `qualification` reports operator-asserted task fitness. Model choice
 remains an operator-owned configured connection; nothing in these contracts lets
 a browser edit an executable, endpoint or credential.
+
+`modelOptions` performs a fresh provider catalog read and returns only exact
+models that also have deployment-owned task qualification. The returned ID is
+opaque to the consumer. Session creation resolves it again so an option removed
+between settings and submit fails explicitly; it never substitutes the profile's
+base model. `model_option_id` and the exact requested model are retained as
+separate session provenance.
 
 Each turn carries its own effort. `start` and `continue` snapshot the requested
 value and work already in flight is never re-targeted. A `continue` without an

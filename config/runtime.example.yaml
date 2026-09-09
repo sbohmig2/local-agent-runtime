@@ -35,6 +35,9 @@ profiles:
     allow_external_processing: true
     allow_private_processing: false
     qualified_tasks: []
+    # This explicitly qualifies every reasoning model in Claude's maintained
+    # runtime catalog for the general task. It does not copy provider IDs here.
+    catalog_model_tasks: [general]
   grok-default:
     provider: grok
     model: default

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
@@ -19,6 +20,7 @@ from local_agent_runtime.contracts import (
     Invocation,
     Message,
     ModelDiscovery,
+    ModelOptionPolicy,
     ModelProfile,
     ProcessingClass,
     ProviderConnection,
@@ -58,6 +60,7 @@ class SessionRecord:
     tools: tuple[ToolDefinition, ...]
     messages: list[Message]
     private_processing: bool
+    model_option_id: str | None = None
     task_code: str | None = None
     output_schema: Mapping[str, Any] | None = None
     created_at: datetime = field(default_factory=utc_now)
@@ -94,6 +97,7 @@ class SessionRecord:
             "provider_id": self.connection.id,
             "adapter": self.connection.driver,
             "requested_model": self.profile.model,
+            "model_option_id": self.model_option_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
@@ -447,6 +451,179 @@ class RuntimeService:
             )
         return effort
 
+    async def _resolved_model_option(
+        self,
+        profile: ModelProfile,
+        option_id: Any,
+        task_code: str | None = None,
+        discovery: ModelDiscovery | None = None,
+    ) -> tuple[ModelProfile, str]:
+        if not isinstance(option_id, str):
+            raise invalid_request("The model option is invalid")
+        connection = self.configuration.providers[profile.provider_id]
+        if discovery is None:
+            adapter = self.provider_factory(connection, profile)
+            try:
+                async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+                    discovery = await adapter.discover_models()
+            except TimeoutError:
+                raise RuntimeFailure(
+                    "model_catalog_unavailable", "The model catalog timed out", status_code=503
+                ) from None
+            except RuntimeFailure as exc:
+                raise RuntimeFailure(
+                    "model_catalog_unavailable",
+                    "The model catalog is unavailable",
+                    status_code=503,
+                ) from exc
+            except Exception as exc:
+                raise RuntimeFailure(
+                    "model_catalog_unavailable",
+                    "The model catalog is unavailable",
+                    status_code=503,
+                ) from exc
+        if not discovery.supported:
+            raise RuntimeFailure(
+                "model_catalog_unsupported", "The provider does not expose model options"
+            )
+        if discovery.detail_code not in {None, "maintained_catalog"} and not discovery.details:
+            raise RuntimeFailure(
+                "model_catalog_unavailable", "The model catalog is unavailable", status_code=503
+            )
+        policies = self._model_option_policies(profile, discovery)
+        policy = policies.get(option_id)
+        if policy is None:
+            if re.fullmatch(r"model-[a-f0-9]{24}", option_id):
+                raise RuntimeFailure(
+                    "model_option_unavailable",
+                    "The selected model option is no longer available",
+                    status_code=409,
+                )
+            raise invalid_request("The model option is unknown")
+        discovered = next(
+            (
+                item
+                for item in discovery.details
+                if item.model == policy.model and item.kind.value == "reasoning"
+            ),
+            None,
+        )
+        if discovered is None:
+            raise RuntimeFailure(
+                "model_option_unavailable",
+                "The selected model option is no longer available",
+                status_code=409,
+            )
+        if task_code is not None and task_code not in policy.qualified_tasks:
+            raise RuntimeFailure(
+                "model_option_unqualified", "The model option is not qualified for this task"
+            )
+        efforts = policy.reasoning_efforts or discovered.reasoning_efforts
+        if discovered.reasoning_efforts_known:
+            if profile.model_options and any(
+                effort not in discovered.reasoning_efforts for effort in efforts
+            ):
+                raise RuntimeFailure(
+                    "model_option_incompatible",
+                    "The model option reasoning policy is no longer supported",
+                    status_code=409,
+                )
+            efforts = tuple(effort for effort in efforts if effort in discovered.reasoning_efforts)
+        default = policy.default_reasoning_effort or discovered.default_reasoning_effort
+        if default not in efforts:
+            default = None
+        derived = replace(
+            profile,
+            model=policy.model,
+            qualified_tasks=policy.qualified_tasks,
+            reasoning_efforts=efforts,
+            default_reasoning_effort=default,
+            model_options={},
+        )
+        # Adapter resolution is the final transport check. It can narrow a
+        # configured policy but never widen it.
+        transport_efforts = self.provider_factory(connection, derived).reasoning_efforts
+        if set(transport_efforts) != set(efforts):
+            raise RuntimeFailure(
+                "model_option_incompatible",
+                "The model option reasoning policy is not supported",
+                status_code=409,
+            )
+        return replace(derived, reasoning_efforts=transport_efforts), option_id
+
+    @staticmethod
+    def _model_option_policies(
+        profile: ModelProfile, discovery: ModelDiscovery
+    ) -> Mapping[str, ModelOptionPolicy]:
+        if profile.model_options:
+            return profile.model_options
+        if not profile.catalog_model_tasks:
+            return {}
+        policies: dict[str, ModelOptionPolicy] = {}
+        for item in discovery.details:
+            if item.kind.value != "reasoning":
+                continue
+            digest = hashlib.sha256((profile.id + "\0" + item.model).encode("utf-8")).hexdigest()[
+                :24
+            ]
+            option_id = f"model-{digest}"
+            policies[option_id] = ModelOptionPolicy(
+                option_id,
+                item.model,
+                profile.catalog_model_tasks,
+                profile.reasoning_efforts,
+                profile.default_reasoning_effort,
+            )
+        return policies
+
+    async def model_options(self, profile_id: Any) -> dict[str, Any]:
+        if not isinstance(profile_id, str) or profile_id not in self.configuration.profiles:
+            raise not_found("The profile does not exist")
+        if not self._enabled(profile_id):
+            raise not_found("The profile does not exist")
+        profile = self.configuration.profiles[profile_id]
+        connection = self.configuration.providers[profile.provider_id]
+        try:
+            async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+                discovery = await self.provider_factory(connection, profile).discover_models()
+        except Exception:
+            discovery = ModelDiscovery(supported=True, detail_code="catalog_unavailable")
+        options: list[dict[str, Any]] = []
+        for option_id in self._model_option_policies(profile, discovery):
+            try:
+                derived, _ = await self._resolved_model_option(
+                    profile, option_id, discovery=discovery
+                )
+            except RuntimeFailure:
+                continue
+            discovered = next(item for item in discovery.details if item.model == derived.model)
+            options.append(
+                {
+                    "id": option_id,
+                    "display_name": discovered.display_name,
+                    "reasoning": {
+                        "efforts": [item.value for item in derived.reasoning_efforts],
+                        "default": (
+                            derived.default_reasoning_effort.value
+                            if derived.default_reasoning_effort is not None
+                            else None
+                        ),
+                    },
+                    "qualified_tasks": list(derived.qualified_tasks),
+                    "loaded": discovered.loaded,
+                }
+            )
+        return {
+            "profile_id": profile_id,
+            "supported": discovery.supported,
+            "checked_at": utc_now().isoformat(),
+            "detail_code": (
+                discovery.detail_code
+                or ("model_kind_unknown" if discovery.models and not discovery.details else None)
+            ),
+            "options": options,
+        }
+
     @staticmethod
     def _tools(value: Sequence[ToolDefinition]) -> tuple[ToolDefinition, ...]:
         if len(value) > MAX_TOOLS:
@@ -477,6 +654,7 @@ class RuntimeService:
         allow_external_processing: bool = False,
         output_schema: Mapping[str, Any] | None = None,
         reasoning_effort: Any = None,
+        model_option_id: Any = None,
     ) -> dict[str, Any]:
         if not isinstance(prompt, str) or not prompt.strip():
             raise invalid_request("The session prompt is invalid")
@@ -500,6 +678,11 @@ class RuntimeService:
             raise invalid_request("The session profile is disabled")
         profile = self.configuration.profiles[selected]
         connection = self.configuration.providers[profile.provider_id]
+        resolved_option_id: str | None = None
+        if model_option_id is not None:
+            profile, resolved_option_id = await self._resolved_model_option(
+                profile, model_option_id, task_code
+            )
         if connection.processing is ProcessingClass.EXTERNAL and not (
             profile.allow_external_processing and allow_external_processing
         ):
@@ -534,6 +717,7 @@ class RuntimeService:
             tools=self._tools(tools),
             messages=messages,
             private_processing=private_processing,
+            model_option_id=resolved_option_id,
             task_code=task_code,
             output_schema=checked_schema(output_schema) if output_schema is not None else None,
             requested_reasoning_effort=self._reasoning_effort(

@@ -14,7 +14,13 @@ from typing import ClassVar
 
 from local_agent_runtime.adapters.cli_codec import _bounded_prompt, _output_schema, _parse_envelope
 from local_agent_runtime.adapters.cli_environment import _safe_environment
-from local_agent_runtime.adapters.process import ProcessResult, ProcessRunner, run_process
+from local_agent_runtime.adapters.process import (
+    JsonRpcProcessRunner,
+    ProcessResult,
+    ProcessRunner,
+    run_json_rpc_process,
+    run_process,
+)
 from local_agent_runtime.configuration import validate_connection
 from local_agent_runtime.contracts import (
     Capabilities,
@@ -58,6 +64,7 @@ class CLIAdapterBase(ABC):
     runner: ProcessRunner = run_process
     which: Callable[[str], str | None] = shutil.which
     resolve: Callable[[str], str | None] = _concrete_executable
+    json_rpc_runner: JsonRpcProcessRunner = run_json_rpc_process
 
     #: Efforts the route can encode as provider arguments at all.
     TRANSPORT_EFFORTS: ClassVar[tuple[ReasoningEffort, ...]] = ()
