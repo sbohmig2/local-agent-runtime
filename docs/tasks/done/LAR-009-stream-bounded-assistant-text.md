@@ -1,7 +1,7 @@
 ---
 tracker: LAR-009
 component: agent-runtime
-status: review
+status: done
 priority: P1
 effort: M
 parallel_safe: no
@@ -12,7 +12,7 @@ tags: [lar]
 
 # LAR-009 - Stream bounded assistant text
 
-**Status:** Review
+**Status:** Done
 **Priority:** P1 - Finance Vault APP-007 needs truthful partial local-model answers
 **Effort:** M
 
@@ -123,3 +123,12 @@ verification.
   TypeScript tests, generated-contract comparison, documentation validation,
   and isolated Python/TypeScript artifact installation. No commit, push, tag,
   publication, or release was performed.
+- 2026-09-10: Published immutable GitHub release `v0.5.0` from source commit
+  `38159df34bb7e4ee590b28e92a2ac1180184a3d2`. The release wheel, source
+  distribution, TypeScript client, and `SHA256SUMS` were downloaded and
+  independently verified. A final independent Claude review found no release
+  blocker. Finance Vault then pinned the paired Python and TypeScript artifacts,
+  advanced to API `1.4.0`, and passed its complete consumer gate: 620 Python
+  tests, 90 host tests, 53 UI unit tests, 40 browser journeys, documentation
+  validation, and package builds. APP-007 remains separately owner-gated on the
+  live conversation UI.

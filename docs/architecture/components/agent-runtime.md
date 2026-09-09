@@ -48,7 +48,7 @@ consumer-owned and must not be added to this package.
 
 ## Tasks
 
-- LAR-009 — review — [Stream bounded assistant text](../../tasks/LAR-009-stream-bounded-assistant-text.md)
+- LAR-009 — done — [Stream bounded assistant text](../../tasks/done/LAR-009-stream-bounded-assistant-text.md)
 - LAR-008 — done — [Expose provider-native web search](../../tasks/done/LAR-008-expose-provider-native-web-search.md)
 - LAR-007 — done — [Deliver runtime-issued model options](../../tasks/done/LAR-007-deliver-runtime-issued-model-options.md)
 - LAR-006 — review — [Keep long-running event streams alive](../../tasks/LAR-006-keep-long-running-event-streams-alive.md)

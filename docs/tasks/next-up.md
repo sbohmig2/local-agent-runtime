@@ -9,7 +9,6 @@ No task is currently in implementation.
 
 ## Review lane
 
-- [LAR-009 - Stream bounded assistant text](./LAR-009-stream-bounded-assistant-text.md)
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane
@@ -18,6 +17,9 @@ No additional task is approved.
 
 ## Completed
 
+- [LAR-009 - Stream bounded assistant text](./done/LAR-009-stream-bounded-assistant-text.md)
+  - immutable public `v0.5.0` with bounded provider-neutral assistant-text
+    deltas, LM Studio native streaming, and verified Finance Vault consumer pin.
 - [LAR-008 - Expose provider-native web search](./done/LAR-008-expose-provider-native-web-search.md)
   - immutable public `v0.4.0` with bounded provider-native web search for CLI
     routes and verified Finance Vault consumer promotion.
