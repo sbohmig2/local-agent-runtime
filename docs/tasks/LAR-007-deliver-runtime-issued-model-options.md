@@ -195,3 +195,13 @@ the implementation and repository gates pass.
   catalog enumeration. Claude re-ran each reproduction, marked `CR-001` through
   `CR-004` resolved, found no new blocker, and returned `READY TO RELEASE`
   contingent on the clean artifact build and checksum verification.
+- 2026-09-09: Published immutable GitHub release `v0.3.0` from source commit
+  `08f1999016e48dc8a71c741d91155e1c7b846b67`. Anonymous downloads verified
+  against `SHA256SUMS`: TypeScript client
+  `6718cd815bf0e316da90a3895d0acd279e204a22e811ae13efbe0cce41263425`,
+  Python wheel
+  `562341b87e7310441d89b127c7a7ddae271288f6a5782118440450db75109711`,
+  and source distribution
+  `199f55e8dd3a5db6ca96948700301512d29f0bca7ef4b2550c5d5150af92741e`.
+  GitHub reports the release immutable. The task remains in review while the
+  explicitly authorized Finance Vault consumer-pin promotion is verified.
