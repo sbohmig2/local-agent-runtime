@@ -1,7 +1,7 @@
 ---
 tracker: LAR-007
 component: agent-runtime
-status: review
+status: done
 priority: P1
 effort: M
 parallel_safe: no
@@ -12,7 +12,7 @@ tags: [lar]
 
 # LAR-007 - Deliver runtime-issued model options
 
-**Status:** Review
+**Status:** Done
 **Priority:** P1 - let consumers configure a provider model without owning provider catalogs
 **Effort:** M
 
@@ -205,3 +205,10 @@ the implementation and repository gates pass.
   `199f55e8dd3a5db6ca96948700301512d29f0bca7ef4b2550c5d5150af92741e`.
   GitHub reports the release immutable. The task remains in review while the
   explicitly authorized Finance Vault consumer-pin promotion is verified.
+- 2026-09-09: Closed after the released model-option contract was carried
+  forward into immutable `v0.4.0` from source commit
+  `b45397a6e139451ccfc8eb76ad8f02d773cd73cd`, and Finance Vault pinned the
+  matched Python and TypeScript `0.4.0` artifacts with HTTP API `1.3.0` in
+  APP-005 commit `54bb510ef34a6df876cd0a170c6277b757801216`. The complete Finance Vault
+  consumer gate and independent UI review passed; LAR-006 remains separately in
+  review.

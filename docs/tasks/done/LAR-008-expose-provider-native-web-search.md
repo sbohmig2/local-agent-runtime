@@ -1,7 +1,7 @@
 ---
 tracker: LAR-008
 component: agent-runtime
-status: review
+status: done
 priority: P1
 effort: S
 parallel_safe: no
@@ -12,7 +12,7 @@ tags: [lar]
 
 # LAR-008 - Expose provider-native web search
 
-**Status:** Review
+**Status:** Done
 **Priority:** P1 - Finance Vault needs external CLI agents to retain their native public-web capability
 **Effort:** S
 
@@ -102,3 +102,14 @@ Vault pin promotion, and closure after the clean release and consumer gates pass
   artifact construction, and isolated package installation. A separate
   read-only reviewer found no release-blocking provider, contract, or consumer
   presentation issue before publication.
+- 2026-09-09: Published immutable GitHub release `v0.4.0` from source commit
+  `b45397a6e139451ccfc8eb76ad8f02d773cd73cd`. Anonymous downloads verified
+  against `SHA256SUMS`: TypeScript client
+  `5980254d6822b7f095f5f09c2c20c4eaaa7dd1f4ed401513c8fcb94703e1dd0e7`,
+  Python wheel
+  `9d7ff7ded333eacaa12fff779698b54581a1f6030ecebff9f01c0514c4857559`,
+  and source distribution
+  `d0e3fa1f87c6d5969fc9abb77334654c27a036397649ce50287b92f54de85289`.
+  Finance Vault pinned the matched `0.4.0` packages and API `1.3.0`, passed its
+  complete consumer gate and independent UI review, and closed APP-005 in
+  commit `54bb510ef34a6df876cd0a170c6277b757801216`.

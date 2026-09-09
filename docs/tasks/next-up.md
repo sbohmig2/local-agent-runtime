@@ -9,9 +9,7 @@ No task is currently in implementation.
 
 ## Review lane
 
-- [LAR-008 - Expose provider-native web search](./LAR-008-expose-provider-native-web-search.md)
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
-- [LAR-007 - Deliver runtime-issued model options](./LAR-007-deliver-runtime-issued-model-options.md)
 
 ## Queued lane
 
@@ -19,6 +17,12 @@ No additional task is approved.
 
 ## Completed
 
+- [LAR-008 - Expose provider-native web search](./done/LAR-008-expose-provider-native-web-search.md)
+  - immutable public `v0.4.0` with bounded provider-native web search for CLI
+    routes and verified Finance Vault consumer promotion.
+- [LAR-007 - Deliver runtime-issued model options](./done/LAR-007-deliver-runtime-issued-model-options.md)
+  - immutable public `v0.3.0` model-option contract, carried forward in
+    `v0.4.0` and verified in Finance Vault APP-005.
 - [LAR-005 - Deliver model selection and reasoning controls](./done/LAR-005-deliver-model-selection-and-reasoning-controls.md)
   - immutable public `v0.2.0` with configured model selection, reasoning
     controls, supported-adapter inventory, detection, and managed activation.
