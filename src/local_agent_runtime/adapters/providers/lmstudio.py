@@ -3,8 +3,9 @@
 import json
 from collections.abc import Mapping
 from contextlib import aclosing
-from dataclasses import dataclass
-from typing import ClassVar
+from copy import deepcopy
+from dataclasses import dataclass, replace
+from typing import Any, ClassVar
 
 from local_agent_runtime.adapters.chat_codec import ChatStreamDecoder, chat_body, decode_chat
 from local_agent_runtime.adapters.http_transport import (
@@ -41,6 +42,35 @@ SSE_JSON_BYTES_PER_TEXT_CHAR = 6
 SSE_FRAME_METADATA_BYTES = 512
 SSE_TOKEN_PAYLOAD_BYTES = 256
 SSE_EXTRA_FRAMES = 8
+UNSUPPORTED_GRAMMAR_SCHEMA_KEYWORDS = frozenset({"minLength", "maxLength"})
+SCHEMA_MAP_KEYWORDS = frozenset(
+    {
+        "$defs",
+        "definitions",
+        "dependencies",
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    }
+)
+SCHEMA_SINGLE_KEYWORDS = frozenset(
+    {
+        "additionalItems",
+        "additionalProperties",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
+SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+SCHEMA_SEQUENCE_KEYWORDS = SCHEMA_SINGLE_KEYWORDS | SCHEMA_LIST_KEYWORDS
 
 
 def _stream_response_limit(profile: ModelProfile, invocation: Invocation) -> int:
@@ -53,6 +83,52 @@ def _stream_response_limit(profile: ModelProfile, invocation: Invocation) -> int
         + invocation.limits.max_output_chars * SSE_JSON_BYTES_PER_TEXT_CHAR
         + (invocation.limits.max_output_tokens + SSE_EXTRA_FRAMES) * frame_bytes
     )
+
+
+def _grammar_compatible_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy a schema without mistaking property or literal names for keywords."""
+
+    compatible: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in UNSUPPORTED_GRAMMAR_SCHEMA_KEYWORDS:
+            continue
+        if key in SCHEMA_MAP_KEYWORDS and isinstance(value, Mapping):
+            compatible[key] = {
+                name: _grammar_compatible_schema(item)
+                if isinstance(item, Mapping)
+                else deepcopy(item)
+                for name, item in value.items()
+            }
+        elif key in SCHEMA_SINGLE_KEYWORDS and isinstance(value, Mapping):
+            compatible[key] = _grammar_compatible_schema(value)
+        elif key in SCHEMA_SEQUENCE_KEYWORDS and isinstance(value, list):
+            compatible[key] = [
+                _grammar_compatible_schema(item) if isinstance(item, Mapping) else deepcopy(item)
+                for item in value
+            ]
+        else:
+            compatible[key] = deepcopy(value)
+    return compatible
+
+
+def _lmstudio_chat_body(
+    profile: ModelProfile, invocation: Invocation, *, stream: bool = False
+) -> dict[str, Any]:
+    """Translate only the provider wire schema; callers retain the original contract."""
+
+    wire_invocation = replace(
+        invocation,
+        tools=tuple(
+            replace(tool, input_schema=_grammar_compatible_schema(tool.input_schema))
+            for tool in invocation.tools
+        ),
+        output_schema=(
+            _grammar_compatible_schema(invocation.output_schema)
+            if invocation.output_schema is not None
+            else None
+        ),
+    )
+    return chat_body(profile, wire_invocation, stream=stream)
 
 
 @dataclass
@@ -238,7 +314,7 @@ class LMStudioAdapter:
             headers={"Content-Type": "application/json"},
             timeout=invocation.limits.timeout_seconds,
             max_bytes=max(64_000, invocation.limits.max_output_chars * 6),
-            body=chat_body(self.profile, invocation),
+            body=_lmstudio_chat_body(self.profile, invocation),
         )
         return self._checked_result(decode_chat(payload, invocation))
 
@@ -253,7 +329,7 @@ class LMStudioAdapter:
                 "reasoning_effort_unsupported",
                 "The requested reasoning effort is not supported by this profile",
             )
-        body = chat_body(self.profile, invocation, stream=True)
+        body = _lmstudio_chat_body(self.profile, invocation, stream=True)
         decoder = ChatStreamDecoder(invocation)
         async with aclosing(
             stream_json_sse(

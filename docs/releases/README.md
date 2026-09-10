@@ -11,4 +11,5 @@ owned operations.
 - [v0.3.0](./v0.3.0.md) - runtime-issued selectable model options and exact-model dispatch.
 - [v0.4.0](./v0.4.0.md) - narrowly bounded provider-native web search for external CLI routes.
 - [v0.5.0](./v0.5.0.md) - bounded native assistant-text streaming for LM Studio.
+- [v0.5.1](./v0.5.1.md) - LM Studio schema compatibility and catalog-option effort validation.
 - [v0.2.0](./v0.2.0.md) - model selection, reasoning controls, and managed adapter catalog.

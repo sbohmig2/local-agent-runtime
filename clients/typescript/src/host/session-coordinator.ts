@@ -10,6 +10,7 @@ import type {
   PublicProfile,
   PublicAdapterCatalog,
   PublicModelOptions,
+  ReasoningOptions,
   ReasoningEffort,
   RuntimePort,
   StartSessionRequest,
@@ -104,6 +105,7 @@ interface SessionRecord {
   runtimeCursor: number;
   nextEventSequence: number;
   profile: PublicProfile;
+  reasoning: ReasoningOptions;
   processingRequest: StartSessionRequest;
   continuing: boolean;
   toolRounds: number;
@@ -130,12 +132,12 @@ export interface SessionCoordinatorOptions {
 
 function requestedEffort(
   effort: ReasoningEffort | undefined,
-  profile: PublicProfile
+  reasoning: ReasoningOptions
 ): ReasoningEffort | undefined {
   if (effort === undefined) return undefined;
   // Refuse before the runtime is asked, so an unsupported effort is never
   // accepted and quietly dropped by a provider.
-  if (!profile.reasoning.efforts.includes(effort)) {
+  if (!reasoning.efforts.includes(effort)) {
     throw new HostError("reasoning_effort_unsupported", 400);
   }
   return effort;
@@ -288,6 +290,22 @@ export class SessionCoordinator {
     };
   }
 
+  private async reasoningForOption(
+    profile: PublicProfile,
+    modelOptionId: string | undefined
+  ): Promise<ReasoningOptions> {
+    if (modelOptionId === undefined) return profile.reasoning;
+    const catalog = toPublicModelOptions(await this.runtime.modelOptions(profile.id));
+    if (catalog.profileId !== profile.id) {
+      throw new HostError("invalid_runtime_response", 503);
+    }
+    const option = catalog.options.find((item) => item.id === modelOptionId);
+    if (!catalog.supported || option === undefined) {
+      throw new HostError("model_option_unavailable", 409);
+    }
+    return option.reasoning;
+  }
+
   async start(request: StartSessionRequest): Promise<HostSession> {
     if (
       typeof request.prompt !== "string" ||
@@ -311,7 +329,8 @@ export class SessionCoordinator {
       const rawProfile = profileState.profiles.find((item) => item.id === profileId);
       if (rawProfile === undefined) throw new HostError("profile_unavailable", 409);
       const profile = toPublicProfile(rawProfile);
-      const effort = requestedEffort(request.reasoningEffort, profile);
+      const reasoning = await this.reasoningForOption(profile, request.modelOptionId);
+      const effort = requestedEffort(request.reasoningEffort, reasoning);
       const processingRequest = { ...request, profileId };
       const processing = await this.authorizeProcessing(
         Object.freeze({ ...processingRequest }),
@@ -348,6 +367,7 @@ export class SessionCoordinator {
         runtimeCursor: 0,
         nextEventSequence: 1,
         profile,
+        reasoning,
         processingRequest,
         continuing: false,
         toolRounds: 0,
@@ -384,7 +404,7 @@ export class SessionCoordinator {
     try {
       const effort = requestedEffort(
         options.reasoningEffort ?? record.public.requestedReasoningEffort ?? undefined,
-        record.profile
+        record.reasoning
       );
       const processingRequest: StartSessionRequest = {
         ...record.processingRequest,

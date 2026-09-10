@@ -42,9 +42,10 @@ class FakeRuntime {
   requestedEffort = null;
   requestedModelOption = null;
   profileSignals = [];
+  modelOptionCalls = 0;
 
   async health() {
-    return { status: "available", package_version: "0.5.0", api_version: "1.4.0" };
+    return { status: "available", package_version: "0.5.1", api_version: "1.4.0" };
   }
 
   async profiles(includeHealth = false, signal = undefined, includeDiscovery = false) {
@@ -101,6 +102,7 @@ class FakeRuntime {
   }
 
   async modelOptions(profileId) {
+    this.modelOptionCalls += 1;
     return {profile_id: profileId, supported: true, checked_at: "now", detail_code: null,
       options: [{id: "second-choice", display_name: "Second", qualified_tasks: ["records_chat"],
         loaded: null, reasoning: {efforts: ["high"], default: "high"}}]};
@@ -216,6 +218,39 @@ class FakeRuntime {
       },
       validation: status === "completed" ? "passed" : "pending",
       event_count: status === "completed" ? 6 : 3
+    };
+  }
+}
+
+class CatalogEffortRuntime extends FakeRuntime {
+  optionAvailable = true;
+  optionEfforts = ["medium"];
+
+  async profiles(includeHealth = false, signal = undefined, includeDiscovery = false) {
+    const state = await super.profiles(includeHealth, signal, includeDiscovery);
+    state.profiles.find((profile) => profile.id === "lm-studio-local").reasoning = {
+      efforts: [],
+      default: null
+    };
+    return state;
+  }
+
+  async modelOptions(profileId) {
+    this.modelOptionCalls += 1;
+    return {
+      profile_id: profileId,
+      supported: true,
+      checked_at: "now",
+      detail_code: null,
+      options: this.optionAvailable
+        ? [{
+            id: "terra-choice",
+            display_name: "GPT-5.6-Terra",
+            qualified_tasks: ["records_chat"],
+            loaded: null,
+            reasoning: { efforts: this.optionEfforts, default: "medium" }
+          }]
+        : []
     };
   }
 }
@@ -715,7 +750,7 @@ test("HTTP adapter rejects non-literal-loopback binds at runtime", () => {
 test("SSE connects while idle and host shutdown closes the stream", async () => {
   const agent = {
     async health() {
-      return { status: "available", runtimeVersion: "0.5.0", apiVersion: "1.4.0" };
+      return { status: "available", runtimeVersion: "0.5.1", apiVersion: "1.4.0" };
     },
     async profiles() {
       return { selectedProfile: "local", profiles: [] };
@@ -1101,6 +1136,7 @@ test("a supported effort reaches the runtime and an unsupported one never does",
     (error) => error instanceof HostError && error.code === "reasoning_effort_unsupported"
   );
   assert.equal(runtime.created.length, 1);
+  assert.equal(runtime.modelOptionCalls, 0);
 });
 
 test("existing no-effort callers keep their request shape", async () => {
@@ -1128,6 +1164,56 @@ test("host maps runtime-issued model options and forwards only the opaque choice
   assert.equal(runtime.requestedModelOption, "second-choice");
   assert.equal(runtime.created[0].model_option_id, "second-choice");
   await host.cancel(session.id);
+});
+
+test("catalog option effort is validated against the runtime-issued option", async () => {
+  const runtime = new CatalogEffortRuntime();
+  const host = coordinator(runtime);
+  const session = await host.start({
+    prompt: "question",
+    profileId: "lm-studio-local",
+    modelOptionId: "terra-choice",
+    reasoningEffort: "medium",
+    privateProcessing: true
+  });
+  assert.equal(runtime.modelOptionCalls, 1);
+  assert.equal(runtime.requestedModelOption, "terra-choice");
+  assert.equal(runtime.requestedEffort, "medium");
+  await host.waitForSettled(session.id);
+  await host.continue(session.id, "follow-up", { reasoningEffort: "medium" });
+  assert.equal(runtime.modelOptionCalls, 1);
+  assert.equal(runtime.created[1].reasoning_effort, "medium");
+  await host.cancel(session.id);
+});
+
+test("stale catalog options and efforts fail before session creation", async () => {
+  const missing = new CatalogEffortRuntime();
+  missing.optionAvailable = false;
+  await assert.rejects(
+    coordinator(missing).start({
+      prompt: "question",
+      profileId: "lm-studio-local",
+      modelOptionId: "terra-choice",
+      reasoningEffort: "medium",
+      privateProcessing: true
+    }),
+    (error) => error instanceof HostError && error.code === "model_option_unavailable"
+  );
+  assert.equal(missing.created.length, 0);
+
+  const changed = new CatalogEffortRuntime();
+  changed.optionEfforts = ["low"];
+  await assert.rejects(
+    coordinator(changed).start({
+      prompt: "question",
+      profileId: "lm-studio-local",
+      modelOptionId: "terra-choice",
+      reasoningEffort: "medium",
+      privateProcessing: true
+    }),
+    (error) => error instanceof HostError && error.code === "reasoning_effort_unsupported"
+  );
+  assert.equal(changed.created.length, 0);
 });
 
 test("each continued turn carries its own effort", async () => {

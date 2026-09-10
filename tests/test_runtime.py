@@ -526,6 +526,42 @@ def test_invalid_model_tools_fail(tmp_path: Path, tool_request: ToolRequest, cod
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("agent_summary", ["", "x" * 2_001])
+def test_application_validation_retains_lm_studio_string_length_contract(
+    tmp_path: Path, agent_summary: str
+) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path)
+        tool = ToolDefinition(
+            "operation_finalize",
+            "Finalize the operation",
+            {
+                "type": "object",
+                "properties": {
+                    "agent_summary": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2_000,
+                    }
+                },
+                "required": ["agent_summary"],
+                "additionalProperties": False,
+            },
+        )
+        fake.deltas = []
+        fake.result = CompletionResult(
+            "",
+            (ToolRequest("finalize", "operation_finalize", {"agent_summary": agent_summary}),),
+            "model",
+        )
+        created = await app.create_session("hello", [tool])
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "failed"
+        assert settled["failure"]["code"] == "invalid_tool_arguments"
+
+    asyncio.run(run())
+
+
 def test_unknown_task_and_remote_schema_are_rejected(tmp_path: Path) -> None:
     async def run() -> None:
         app, fake = runtime(tmp_path)

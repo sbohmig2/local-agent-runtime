@@ -54,6 +54,14 @@ provisional JSON is not a display-safe assistant answer. A completion remains
 authoritative and must exactly reconcile with the streamed text for that
 provider round; failure or cancellation emits no fabricated completion.
 
+LM Studio's grammar compiler rejects the otherwise valid JSON Schema string
+keywords `minLength` and `maxLength`. Its adapter recursively omits only those
+keywords from tool and structured-output schemas on the provider wire. The
+runtime retains the original application schemas unchanged and validates tool
+arguments and final structured output against those originals, so transport
+compatibility never relaxes the authoritative contract. Other adapters receive
+their existing request schemas unchanged.
+
 Grok authentication is reported inconclusive when no reliable content-free
 probe is available. CLI effective model remains unknown unless native output
 establishes it. Configured

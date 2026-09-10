@@ -236,8 +236,12 @@ def test_reasoning_http_contract(remote: bool, monkeypatch: pytest.MonkeyPatch) 
         if remote
         else LMStudioAdapter(connection, profile, factory)
     )
+    output_schema = {
+        "type": "object",
+        "properties": {"summary": {"type": "string", "minLength": 1, "maxLength": 20}},
+    }
     result = asyncio.run(
-        adapter.complete(Invocation((Message("user", "hi"),), (), Limits(), {"type": "object"}))
+        adapter.complete(Invocation((Message("user", "hi"),), (), Limits(), output_schema))
     )
     assert result.text == "hello"
     assert result.usage == {"total_tokens": 4}
@@ -247,6 +251,11 @@ def test_reasoning_http_contract(remote: bool, monkeypatch: pytest.MonkeyPatch) 
     if remote:
         assert body["provider"]["only"] == ["openai"]
         assert body["provider"]["allow_fallbacks"] is False
+        assert body["response_format"]["json_schema"]["schema"] == output_schema
+    else:
+        assert body["response_format"]["json_schema"]["schema"]["properties"]["summary"] == {
+            "type": "string"
+        }
 
 
 def test_lm_studio_streams_display_text_across_arbitrary_sse_boundaries() -> None:
@@ -398,6 +407,126 @@ def test_lm_studio_stream_budget_covers_realistic_per_token_and_reasoning_frames
         return result
 
     assert asyncio.run(run()).text == "done"
+
+
+def test_lm_studio_stream_normalizes_nested_tool_grammar_without_mutating_contract() -> None:
+    summary_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "agent_summary": {"type": "string", "minLength": 1, "maxLength": 2_000},
+            "nested": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {"type": "string", "minLength": 2, "maxLength": 20},
+            },
+            "minLength": {"type": "integer"},
+            "literal": {"const": {"maxLength": "keep this literal key"}},
+        },
+        "required": ["agent_summary"],
+        "additionalProperties": False,
+    }
+    tools = tuple(
+        ToolDefinition(f"operation_{index}", "Synthetic operation", {"type": "object"})
+        for index in range(42)
+    ) + (ToolDefinition("operation_finalize", "Finalize the operation", summary_schema),)
+    frame = {
+        "model": "model",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-finalize",
+                            "type": "function",
+                            "function": {
+                                "name": "operation_finalize",
+                                "arguments": '{"agent_summary":"done"}',
+                            },
+                        }
+                    ]
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+    }
+    content = f"data: {json.dumps(frame)}\n\n".encode()
+    observed: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(json.loads(request.content))
+        return httpx.Response(200, stream=FragmentedStream(content))
+
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", "model", False, True),
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    async def run() -> CompletionResult:
+        async def emit(_delta: str) -> None:
+            return None
+
+        return await adapter.complete_streaming(
+            Invocation((Message("user", "hi"),), tools, Limits()), emit
+        )
+
+    result = asyncio.run(run())
+    assert result.tool_requests[0].arguments == {"agent_summary": "done"}
+    assert len(observed[0]["tools"]) == 43
+    wire_schema = observed[0]["tools"][-1]["function"]["parameters"]
+    assert wire_schema["properties"]["agent_summary"] == {"type": "string"}
+    assert wire_schema["properties"]["nested"]["maxItems"] == 2
+    assert wire_schema["properties"]["nested"]["items"] == {"type": "string"}
+    assert wire_schema["properties"]["minLength"] == {"type": "integer"}
+    assert wire_schema["properties"]["literal"]["const"] == {"maxLength": "keep this literal key"}
+    assert summary_schema["properties"]["agent_summary"]["minLength"] == 1
+    assert summary_schema["properties"]["nested"]["items"]["maxLength"] == 20
+
+
+def test_lm_studio_nonstreaming_normalizes_structured_output_grammar() -> None:
+    output_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"agent_summary": {"type": "string", "minLength": 1, "maxLength": 2_000}},
+        "required": ["agent_summary"],
+        "additionalProperties": False,
+    }
+    observed: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "model",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '{"agent_summary":"done"}'},
+                    }
+                ],
+            },
+        )
+
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", "model", False, True),
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    result = asyncio.run(
+        adapter.complete(
+            Invocation((Message("user", "hi"),), (), Limits(), output_schema=output_schema)
+        )
+    )
+    wire_schema = observed[0]["response_format"]["json_schema"]["schema"]
+    assert result.text == '{"agent_summary":"done"}'
+    assert wire_schema["properties"]["agent_summary"] == {"type": "string"}
+    assert output_schema["properties"]["agent_summary"]["maxLength"] == 2_000
 
 
 def test_streaming_request_fields_are_inside_the_input_character_bound() -> None:

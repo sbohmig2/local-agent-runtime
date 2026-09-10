@@ -93,9 +93,14 @@ Each turn carries its own effort. `start` and `continue` snapshot the requested
 value and work already in flight is never re-targeted. A `continue` without an
 override stays at the effort already in use, so a follow-up never silently drops
 back to the profile default; pass an explicit effort to change it, or start a new
-session. An effort a profile does not support fails with
-`reasoning_effort_unsupported` before the provider is reached, and callers that
-send no effort keep their previous behavior.
+session. For a selected runtime-issued model option, the TypeScript host checks
+effort against that option's fresh runtime-issued capabilities rather than the
+base profile; stale option IDs or effort capabilities fail before session
+creation as `model_option_unavailable` or `reasoning_effort_unsupported`, and
+the Python runtime resolves the option again authoritatively. An
+effort the applicable profile or option does not support fails with
+`reasoning_effort_unsupported` before the provider is reached. Callers that send
+no effort keep their previous behavior.
 
 `requestedReasoningEffort` is what the runtime forwarded, including a configured
 default it resolved on the caller's behalf. `effectiveReasoningEffort` is
@@ -184,9 +189,9 @@ unauthenticated requests.
 
 ## Artifact compatibility
 
-The current immutable Python and TypeScript release is version `0.5.0` with API
-`1.4.0`. A consumer pins both artifacts from the same release and keeps its
-lockfiles. Upgrade work should:
+The current immutable Python and TypeScript release is version `0.5.1` with API
+`1.4.0`; development head uses the same versions. A consumer pins both
+artifacts from the same release and keeps its lockfiles. Upgrade work should:
 
 1. install the new artifacts in a branch;
 2. regenerate or inspect the committed OpenAPI contract diff;

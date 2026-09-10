@@ -9,6 +9,7 @@ No task is currently in implementation.
 
 ## Review lane
 
+- [LAR-010 - Harden LM Studio catalog requests](./LAR-010-normalize-lm-studio-grammar-schemas.md)
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane

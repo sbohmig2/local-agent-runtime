@@ -23,7 +23,7 @@ Consumer installation and process boundaries are described in
 ## Current stage
 
 The repository baseline, first implementation, and immutable public
-MIT-licensed releases through `v0.3.0` are complete. Live-provider
+MIT-licensed releases through `v0.5.1` are complete. Live-provider
 qualification remains distinct work. See the completed
 [LAR-001](./tasks/done/LAR-001-establish-provider-neutral-local-agent-runtime.md),
 [LAR-002](./tasks/done/LAR-002-release-initial-consumer-artifacts.md),
