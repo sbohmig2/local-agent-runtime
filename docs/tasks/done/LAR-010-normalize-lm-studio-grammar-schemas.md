@@ -1,7 +1,7 @@
 ---
 tracker: LAR-010
 component: agent-runtime
-status: review
+status: done
 priority: P0
 effort: S
 parallel_safe: no
@@ -12,7 +12,7 @@ tags: [lar]
 
 # LAR-010 - Harden LM Studio request compatibility
 
-**Status:** Review
+**Status:** Done
 
 ## Goal
 
@@ -100,8 +100,11 @@ offer recovery without exposing the provider's raw diagnostics.
   `context_window_exceeded`, and keeps raw messages and token counts private.
   Provider, runtime-composition, malformed-field, wording-change, and
   false-positive tests passed; Finance Vault's real Safari journey rendered the
-  actionable recovery from the persisted stable code. Package `0.5.2` remains
-  pending immutable release and consumer promotion.
+  actionable recovery from the persisted stable code.
+- 2026-09-10: Published immutable release `v0.5.2` from source commit
+  `6a3ec3f4d5acf54fe4648d3e39afe7dc502f547f`. The downloaded wheel, source
+  archive, TypeScript tarball, and checksum manifest passed independent release
+  verification. Finance Vault consumer promotion remains owned by APP-007.
 
 ## Residual risk
 

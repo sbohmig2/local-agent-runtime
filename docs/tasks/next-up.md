@@ -9,7 +9,6 @@ No task is currently in implementation.
 
 ## Review lane
 
-- [LAR-010 - Harden LM Studio catalog requests](./LAR-010-normalize-lm-studio-grammar-schemas.md)
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane
@@ -18,6 +17,9 @@ No additional task is approved.
 
 ## Completed
 
+- [LAR-010 - Harden LM Studio request compatibility](./done/LAR-010-normalize-lm-studio-grammar-schemas.md)
+  - immutable public `v0.5.2` with stable, redacted LM Studio context-window
+    classification and retained `v0.5.1` schema/effort compatibility.
 - [LAR-009 - Stream bounded assistant text](./done/LAR-009-stream-bounded-assistant-text.md)
   - immutable public `v0.5.0` with bounded provider-neutral assistant-text
     deltas, LM Studio native streaming, and verified Finance Vault consumer pin.
