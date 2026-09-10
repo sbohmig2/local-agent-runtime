@@ -17,7 +17,11 @@ from local_agent_runtime.adapters.process import ProcessResult, ProcessRunner, r
 from local_agent_runtime.adapters.providers.claude import ClaudeAdapter
 from local_agent_runtime.adapters.providers.codex import CodexAdapter
 from local_agent_runtime.adapters.providers.grok import GrokAdapter
-from local_agent_runtime.adapters.providers.lmstudio import LMStudioAdapter
+from local_agent_runtime.adapters.providers.lmstudio import (
+    LMStudioAdapter,
+    _is_context_window_message,
+    _is_structured_context_window_error,
+)
 from local_agent_runtime.adapters.providers.openrouter import OpenRouterAdapter
 from local_agent_runtime.contracts import (
     Capabilities,
@@ -49,6 +53,36 @@ class FragmentedStream(httpx.AsyncByteStream):
             yield self.content[offset : offset + size]
             offset += size
             index += 1
+
+
+def wrapped_lm_studio_context_error(
+    *,
+    required: int = 40_536,
+    available: int = 32_768,
+    message_required: int | None = None,
+    code: int = 400,
+    error_type: str = "exceed_context_size_error",
+    message: str | None = None,
+    wrapper_status: int = 400,
+    suffix: str = "",
+) -> str:
+    message_required = required if message_required is None else message_required
+    detail = {
+        "error": {
+            "code": code,
+            "message": message
+            or (
+                f"request ({message_required} tokens) exceeds the available context size "
+                f"({available} tokens), try increasing it"
+            ),
+            "type": error_type,
+            "n_prompt_tokens": required,
+            "n_ctx": available,
+        }
+    }
+    return (
+        f"Engine protocol predict request returned {wrapper_status}: {json.dumps(detail)}{suffix}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -728,6 +762,175 @@ def test_lm_studio_stream_rejects_malformed_sse_data() -> None:
         assert caught.value.code == "invalid_provider_response"
 
     asyncio.run(run())
+
+
+def test_lm_studio_stream_classifies_context_window_error_without_exposing_diagnostics() -> None:
+    native_message = wrapped_lm_studio_context_error(
+        suffix=". Error Data: n/a, Additional Data: n/a"
+    )
+    payload = {"error": {"message": native_message}, "message": native_message}
+    content = f"event: error\ndata: {json.dumps(payload)}\n\n".encode()
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/event-stream"},
+                    stream=FragmentedStream(content),
+                )
+            )
+        )
+
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", "model", False, True),
+        factory,
+    )
+
+    async def run() -> None:
+        async def emit(_delta: str) -> None:
+            return None
+
+        with pytest.raises(RuntimeFailure) as caught:
+            await adapter.complete_streaming(
+                Invocation((Message("user", "bounded input"),), (), Limits()), emit
+            )
+        assert caught.value.code == "context_window_exceeded"
+        assert (
+            str(caught.value) == "The request exceeds the selected model's available context window"
+        )
+        assert "40536" not in str(caught.value)
+        assert "32768" not in str(caught.value)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "native_message",
+    [
+        wrapped_lm_studio_context_error(required=32_768, available=32_768),
+        wrapped_lm_studio_context_error(required=1_024, available=32_768),
+        wrapped_lm_studio_context_error(code=422),
+        wrapped_lm_studio_context_error(error_type="server_error"),
+        wrapped_lm_studio_context_error(wrapper_status=422),
+        wrapped_lm_studio_context_error() + "x" * 2_049,
+    ],
+    ids=["equal", "reversed", "wrong-code", "wrong-type", "mismatched-status", "oversized"],
+)
+def test_lm_studio_context_window_classifier_rejects_false_positive_boundaries(
+    native_message: str,
+) -> None:
+    assert _is_context_window_message(native_message) is False
+
+
+def test_lm_studio_structured_context_window_fields_do_not_depend_on_message_wording() -> None:
+    changed_wording = wrapped_lm_studio_context_error(
+        message="Le contexte chargé est trop petit pour cette requête.",
+        suffix=". Error Data: n/a, Additional Data: n/a",
+    )
+    assert _is_context_window_message(changed_wording) is True
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"n_prompt_tokens": True},
+        {"n_prompt_tokens": "40536"},
+        {"n_ctx": None},
+        {"n_ctx": 0},
+    ],
+    ids=["boolean-count", "string-count", "missing-count", "zero-context"],
+)
+def test_lm_studio_structured_context_window_fields_must_be_well_formed(
+    override: dict[str, object],
+) -> None:
+    error: dict[str, object] = {
+        "code": 400,
+        "type": "exceed_context_size_error",
+        "n_prompt_tokens": 40_536,
+        "n_ctx": 32_768,
+    }
+    error.update(override)
+    assert _is_structured_context_window_error(error) is False
+
+
+def test_lm_studio_direct_structured_context_window_fields_are_authoritative() -> None:
+    payload = {
+        "error": {
+            "code": 400,
+            "type": "exceed_context_size_error",
+            "message": "Context capacity reached.",
+            "n_prompt_tokens": 35_819,
+            "n_ctx": 32_768,
+        }
+    }
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+        )
+
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", "model", False, True),
+        factory,
+    )
+    with pytest.raises(RuntimeFailure) as caught:
+        asyncio.run(adapter.complete(Invocation((Message("user", "bounded input"),), (), Limits())))
+    assert caught.value.code == "context_window_exceeded"
+
+
+def test_lm_studio_nonstreaming_classifies_string_context_window_error() -> None:
+    native_message = (
+        "request (35819 tokens) exceeds the available context size (32768 tokens), "
+        "try increasing it"
+    )
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, json={"error": native_message})
+            )
+        )
+
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", "model", False, True),
+        factory,
+    )
+    with pytest.raises(RuntimeFailure) as caught:
+        asyncio.run(adapter.complete(Invocation((Message("user", "bounded input"),), (), Limits())))
+    assert caught.value.code == "context_window_exceeded"
+
+
+def test_lm_studio_does_not_reclassify_unrecognized_error_content() -> None:
+    native_message = "secret-canary: another provider failure"
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, json={"error": native_message})
+            )
+        )
+
+    adapter = LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        ModelProfile("profile", "provider", "model", False, True),
+        factory,
+    )
+    with pytest.raises(RuntimeFailure) as caught:
+        asyncio.run(adapter.complete(Invocation((Message("user", "bounded input"),), (), Limits())))
+    assert caught.value.code == "invalid_provider_response"
+    assert "secret-canary" not in str(caught.value)
 
 
 def test_only_lm_studio_claims_streaming_in_current_provider_scope() -> None:

@@ -1,6 +1,7 @@
 """LM Studio reasoning adapter and local model-catalog semantics."""
 
 import json
+import re
 from collections.abc import Mapping
 from contextlib import aclosing
 from copy import deepcopy
@@ -43,6 +44,13 @@ SSE_FRAME_METADATA_BYTES = 512
 SSE_TOKEN_PAYLOAD_BYTES = 256
 SSE_EXTRA_FRAMES = 8
 UNSUPPORTED_GRAMMAR_SCHEMA_KEYWORDS = frozenset({"minLength", "maxLength"})
+CONTEXT_WINDOW_MESSAGE = re.compile(
+    r"request \((?P<required>[1-9][0-9]{0,8}) tokens\) exceeds "
+    r"(?:the )?available context size \((?P<available>[1-9][0-9]{0,8}) tokens\)"
+    r"(?:, try increasing it)?\.?",
+    re.IGNORECASE,
+)
+ENGINE_ERROR_PREFIX = "Engine protocol predict request returned 400: "
 SCHEMA_MAP_KEYWORDS = frozenset(
     {
         "$defs",
@@ -129,6 +137,66 @@ def _lmstudio_chat_body(
         ),
     )
     return chat_body(profile, wire_invocation, stream=stream)
+
+
+def _is_context_window_message(message: str) -> bool:
+    """Recognize a bounded structured wrapper or a legacy plain-string failure."""
+
+    if len(message) > 2_048:
+        return False
+    if message.startswith(ENGINE_ERROR_PREFIX):
+        try:
+            # LM Studio may append bounded diagnostic prose after the native JSON
+            # object (for example ``. Error Data: n/a``). Decode only the leading
+            # object and classify from its typed fields; the suffix is irrelevant.
+            native, _ = json.JSONDecoder().raw_decode(message.removeprefix(ENGINE_ERROR_PREFIX))
+            return isinstance(native, Mapping) and _is_structured_context_window_error(
+                native.get("error")
+            )
+        except (TypeError, ValueError, RecursionError):
+            return False
+    direct = CONTEXT_WINDOW_MESSAGE.fullmatch(message.strip())
+    return direct is not None and int(direct["required"]) > int(direct["available"])
+
+
+def _is_structured_context_window_error(value: object) -> bool:
+    """Use LM Studio's typed error fields without depending on localized prose."""
+
+    if not isinstance(value, Mapping):
+        return False
+    required = value.get("n_prompt_tokens")
+    available = value.get("n_ctx")
+    return (
+        value.get("code") == 400
+        and value.get("type") == "exceed_context_size_error"
+        and type(required) is int
+        and type(available) is int
+        and 0 < available < required <= 999_999_999
+    )
+
+
+def _lmstudio_response_failure(payload: Mapping[str, Any]) -> RuntimeFailure | None:
+    """Classify known bounded LM Studio failures without exposing native diagnostics."""
+
+    error = payload.get("error")
+    if _is_structured_context_window_error(error):
+        return RuntimeFailure(
+            "context_window_exceeded",
+            "The request exceeds the selected model's available context window",
+        )
+    message = (
+        error
+        if isinstance(error, str)
+        else error.get("message")
+        if isinstance(error, Mapping)
+        else None
+    )
+    if isinstance(message, str) and _is_context_window_message(message):
+        return RuntimeFailure(
+            "context_window_exceeded",
+            "The request exceeds the selected model's available context window",
+        )
+    return None
 
 
 @dataclass
@@ -316,6 +384,9 @@ class LMStudioAdapter:
             max_bytes=max(64_000, invocation.limits.max_output_chars * 6),
             body=_lmstudio_chat_body(self.profile, invocation),
         )
+        failure = _lmstudio_response_failure(payload)
+        if failure is not None:
+            raise failure
         return self._checked_result(decode_chat(payload, invocation))
 
     async def complete_streaming(
@@ -343,6 +414,9 @@ class LMStudioAdapter:
             )
         ) as frames:
             async for payload in frames:
+                failure = _lmstudio_response_failure(payload)
+                if failure is not None:
+                    raise failure
                 for delta in decoder.accept(payload):
                     await emit_text(delta)
         return self._checked_result(decoder.complete())

@@ -13,6 +13,7 @@ from jsonschema import Draft202012Validator
 
 import local_agent_runtime.gateway as gateway_module
 import local_agent_runtime.service as service_module
+from local_agent_runtime.adapters.providers.lmstudio import LMStudioAdapter
 from local_agent_runtime.adapters.selection import SelectionStore
 from local_agent_runtime.api_contract import API_VERSION, SCHEMAS
 from local_agent_runtime.configuration import load_configuration
@@ -119,12 +120,15 @@ class StreamingFakeProvider(FakeProvider):
         self.deltas: list[str] = ["answer"]
         self.streaming_calls = 0
         self.block: asyncio.Event | None = None
+        self.streaming_failure: RuntimeFailure | None = None
 
     async def complete_streaming(
         self, invocation: Invocation, emit_text: TextDeltaSink
     ) -> CompletionResult:
         self.streaming_calls += 1
         self.invocations.append(invocation)
+        if self.streaming_failure is not None:
+            raise self.streaming_failure
         for delta in self.deltas:
             await emit_text(delta)
         if self.block is not None:
@@ -205,6 +209,93 @@ def test_streaming_mismatch_fails_without_fabricating_completion(tmp_path: Path)
             "assistant_text_delta",
             "session_failed",
         ]
+
+    asyncio.run(run())
+
+
+def test_context_window_failure_keeps_only_the_stable_public_classification(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path)
+        fake.streaming_failure = RuntimeFailure(
+            "context_window_exceeded",
+            "The request exceeds the selected model's available context window",
+        )
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "failed"
+        assert settled["failure"] == {
+            "code": "context_window_exceeded",
+            "message": "The request exceeds the selected model's available context window",
+        }
+        failure_event = app.events(created["id"])[-1]
+        assert failure_event["sequence"] == 3
+        assert failure_event["type"] == "session_failed"
+        assert failure_event["payload"] == settled["failure"]
+
+    asyncio.run(run())
+
+
+def test_lm_studio_context_window_sse_composes_to_redacted_runtime_failure(
+    tmp_path: Path,
+) -> None:
+    native_detail = {
+        "error": {
+            "code": 400,
+            "message": (
+                "request (40536 tokens) exceeds the available context size (32768 tokens), "
+                "try increasing it"
+            ),
+            "type": "exceed_context_size_error",
+            "n_prompt_tokens": 40536,
+            "n_ctx": 32768,
+        }
+    }
+    native_message = (
+        f"Engine protocol predict request returned 400: {json.dumps(native_detail)}"
+        ". Error Data: n/a, Additional Data: n/a"
+    )
+    payload = {"error": {"message": native_message}, "message": native_message}
+    content = f"event: error\ndata: {json.dumps(payload)}\n\n".encode()
+
+    def client_factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/event-stream"},
+                    content=content,
+                )
+            )
+        )
+
+    async def run() -> None:
+        connection = ProviderConnection(
+            "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        )
+        profile = ModelProfile("reason", "local", "model", False, True)
+        config = RuntimeConfiguration(
+            {"local": connection}, {"reason": profile}, "reason", {"answer": "reason"}
+        )
+        app = RuntimeService(
+            config,
+            SelectionStore(tmp_path / "state"),
+            provider_factory=lambda found_connection, found_profile: LMStudioAdapter(
+                found_connection, found_profile, client_factory
+            ),
+        )
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        events = app.events(created["id"])
+        assert settled["failure"] == {
+            "code": "context_window_exceeded",
+            "message": "The request exceeds the selected model's available context window",
+        }
+        assert events[-1]["type"] == "session_failed"
+        assert events[-1]["payload"] == settled["failure"]
+        assert "40536" not in json.dumps({"session": settled, "events": events})
+        assert "32768" not in json.dumps({"session": settled, "events": events})
 
     asyncio.run(run())
 

@@ -10,7 +10,7 @@ updated: 2026-09-10
 tags: [lar]
 ---
 
-# LAR-010 - Harden LM Studio catalog requests
+# LAR-010 - Harden LM Studio request compatibility
 
 **Status:** Review
 
@@ -21,6 +21,8 @@ its grammar compiler rejects supported JSON Schema string-length keywords,
 without weakening the application's authoritative validation contract.
 Keep runtime-issued catalog model options usable through the TypeScript host
 when their reasoning capabilities intentionally differ from the base profile.
+Classify LM Studio context-window exhaustion precisely enough for a consumer to
+offer recovery without exposing the provider's raw diagnostics.
 
 ## Boundary
 
@@ -34,8 +36,10 @@ when their reasoning capabilities intentionally differ from the base profile.
 - The host validates a selected option and its effort against a fresh
   runtime-issued option catalog. It never trusts a consumer model label, and the
   Python runtime remains authoritative when it resolves the option again.
-- Immutable release `v0.5.0` and its release notes remain unchanged. This task
-  prepares paired development package version `0.5.1`; API remains `1.4.0`.
+- Immutable releases through `v0.5.1` and their release notes remain unchanged.
+  The context-window correction prepares paired package version `0.5.2`; API
+  remains `1.4.0` because the existing failure-code field carries the additive
+  classification.
 
 ## Scope and acceptance
 
@@ -47,6 +51,11 @@ when their reasoning capabilities intentionally differ from the base profile.
 - Prove results outside the original minimum or maximum still fail application
   validation with `invalid_tool_arguments`.
 - Keep LM Studio streaming and non-streaming paths behaviorally aligned.
+- Recognize the captured HTTP-200 SSE context error from bounded structured
+  fields, tolerate non-semantic wording changes, and fall back to bounded text
+  matching only when structured fields are absent.
+- Emit `context_window_exceeded` with fixed safe text; do not expose native
+  messages or token counts, and do not reclassify malformed or unrelated errors.
 - Validate catalog-option effort against that option rather than the base
   profile; reject stale option IDs or effort capabilities before session
   creation while preserving base-profile and continued-session behavior.
@@ -85,6 +94,14 @@ when their reasoning capabilities intentionally differ from the base profile.
   opt-in live test skipped, 50 TypeScript tests, generated contracts,
   documentation, package builds, and isolated artifact installation. No commit,
   push, tag, publication, or release was performed.
+- 2026-09-10: Finance Vault live use exposed LM Studio's HTTP-200 SSE context
+  overflow after an application-tool round. The adapter now recognizes the
+  bounded structured `exceed_context_size_error`, emits only stable
+  `context_window_exceeded`, and keeps raw messages and token counts private.
+  Provider, runtime-composition, malformed-field, wording-change, and
+  false-positive tests passed; Finance Vault's real Safari journey rendered the
+  actionable recovery from the persisted stable code. Package `0.5.2` remains
+  pending immutable release and consumer promotion.
 
 ## Residual risk
 

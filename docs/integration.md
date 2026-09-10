@@ -189,7 +189,7 @@ unauthenticated requests.
 
 ## Artifact compatibility
 
-The current immutable Python and TypeScript release is version `0.5.1` with API
+The current immutable Python and TypeScript release is version `0.5.2` with API
 `1.4.0`; development head uses the same versions. A consumer pins both
 artifacts from the same release and keeps its lockfiles. Upgrade work should:
 

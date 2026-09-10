@@ -62,6 +62,14 @@ arguments and final structured output against those originals, so transport
 compatibility never relaxes the authoritative contract. Other adapters receive
 their existing request schemas unchanged.
 
+LM Studio may return a context-window overflow inside an HTTP-200 SSE error
+frame. The adapter classifies the bounded structured native error as
+`context_window_exceeded` using its code, type, prompt-token count, and active
+context size. Those native counts and messages remain provider diagnostics;
+only the stable code and a fixed redacted explanation enter the public session.
+A bounded text pattern is retained only for compatible older responses that do
+not contain the structured fields.
+
 Grok authentication is reported inconclusive when no reliable content-free
 probe is available. CLI effective model remains unknown unless native output
 establishes it. Configured
