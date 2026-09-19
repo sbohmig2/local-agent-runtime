@@ -70,7 +70,6 @@ class SessionRecord:
     updated_at: datetime = field(default_factory=utc_now)
     finished_at: datetime | None = None
     output_chars: int = 0
-    seen_tool_ids: set[str] = field(default_factory=set)
     status: SessionStatus = SessionStatus.CREATED
     events: list[SessionEvent] = field(default_factory=list)
     pending_tools: dict[str, ToolRequest] = field(default_factory=dict)
@@ -888,11 +887,13 @@ class RuntimeService:
                 catalog = {tool.name: tool for tool in record.tools}
                 pending: dict[str, ToolRequest] = {}
                 for request in result.tool_requests:
-                    if (
-                        not TOOL_REQUEST_ID.fullmatch(request.id)
-                        or request.id in pending
-                        or request.id in record.seen_tool_ids
-                    ):
+                    # Identity is scoped to the turn: a provider may reuse an
+                    # identifier once the earlier request's result was delivered,
+                    # as the OpenAI-compatible wire format does and as the runtime's
+                    # own JSON envelope for CLI routes never forbade. A round only
+                    # starts after every pending result arrived, so uniqueness
+                    # within this response is the whole invariant (LAR-012).
+                    if not TOOL_REQUEST_ID.fullmatch(request.id) or request.id in pending:
                         raise RuntimeFailure(
                             "invalid_tool_request",
                             "The provider returned a duplicate tool request",
@@ -913,7 +914,6 @@ class RuntimeService:
                     pending[request.id] = request
                 record.messages.append(Message("assistant", result.text, tuple(pending.values())))
                 record.pending_tools = pending
-                record.seen_tool_ids.update(pending)
                 record.status = SessionStatus.WAITING_FOR_TOOL
                 record.add_event(
                     "tool_requests",

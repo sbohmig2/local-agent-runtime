@@ -9,6 +9,9 @@ No task is currently in implementation.
 
 ## Review lane
 
+- [LAR-012 - Scope tool request identity per turn](./LAR-012-scope-tool-request-identity-per-turn.md)
+  - Pi review passed; `v0.5.3` released on owner authorization; the Finance
+    Vault T7 consumer proof completes Slice 2.
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane

@@ -598,6 +598,52 @@ def test_session_tool_loop_and_atomic_results(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_tool_request_identity_may_be_reused_on_a_later_turn(tmp_path: Path) -> None:
+    """LAR-012: identifiers are scoped to the turn, not the session."""
+
+    async def run() -> None:
+        app, fake = runtime(tmp_path)
+        fake.result = CompletionResult("", (ToolRequest("call_0", "lookup", {"id": 1}),), "model")
+        created = await app.create_session("first", [TOOL])
+        assert (await app.wait(created["id"]))["status"] == "waiting_for_tool"
+        fake.result = CompletionResult("answer one", (), "model")
+        await app.submit_tool_results(created["id"], [ToolResult("call_0", "lookup", {"v": 1})])
+        assert (await app.wait(created["id"]))["status"] == "completed"
+
+        fake.result = CompletionResult("", (ToolRequest("call_0", "lookup", {"id": 2}),), "model")
+        await app.continue_session(created["id"], "second")
+        assert (await app.wait(created["id"]))["status"] == "waiting_for_tool"
+        fake.result = CompletionResult("answer two", (), "model")
+        await app.submit_tool_results(created["id"], [ToolResult("call_0", "lookup", {"v": 2})])
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed"
+        received = [
+            event for event in app.events(created["id"]) if event["type"] == "tool_results_received"
+        ]
+        assert [event["payload"]["count"] for event in received] == [1, 1]
+
+    asyncio.run(run())
+
+
+def test_duplicate_tool_request_identity_in_one_response_fails(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = runtime(tmp_path)
+        fake.result = CompletionResult(
+            "",
+            (
+                ToolRequest("call_0", "lookup", {"id": 1}),
+                ToolRequest("call_0", "lookup", {"id": 2}),
+            ),
+            "model",
+        )
+        created = await app.create_session("hello", [TOOL])
+        final = await app.wait(created["id"])
+        assert final["status"] == "failed"
+        assert final["failure"]["code"] == "invalid_tool_request"
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     "tool_request,code",
     [

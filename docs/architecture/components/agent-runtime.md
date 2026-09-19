@@ -48,6 +48,7 @@ consumer-owned and must not be added to this package.
 
 ## Tasks
 
+- LAR-012 — review — [Scope tool request identity per turn](../../tasks/LAR-012-scope-tool-request-identity-per-turn.md)
 - LAR-010 — done — [Harden LM Studio request compatibility](../../tasks/done/LAR-010-normalize-lm-studio-grammar-schemas.md)
 - LAR-009 — done — [Stream bounded assistant text](../../tasks/done/LAR-009-stream-bounded-assistant-text.md)
 - LAR-008 — done — [Expose provider-native web search](../../tasks/done/LAR-008-expose-provider-native-web-search.md)
