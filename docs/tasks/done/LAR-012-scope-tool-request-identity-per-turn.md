@@ -1,7 +1,7 @@
 ---
 tracker: LAR-012
 component: agent-runtime
-status: review
+status: done
 priority: P0
 effort: S
 parallel_safe: yes
@@ -12,7 +12,7 @@ tags: [lar, tools, compatibility]
 
 # LAR-012 - Scope tool request identity per turn
 
-**Status:** Review
+**Status:** Done
 **Priority:** P0 - blocks Finance Vault MCP-001/MCP-002 live Chat acceptance
 **Effort:** S
 
@@ -142,7 +142,7 @@ None.
 
 #### Slice 2 — Release and consumer proof (owner-gated)
 
-- [ ] **Status:** `pending`.
+- [x] **Status:** `complete` (2026-09-19).
 - **Outcome:** immutable `v0.5.3` wheel published; Finance Vault pins it and
   runs the T7 Chat journey with the Terra profile in Orca's embedded browser.
 - **Files:** `pyproject.toml`/`version.py` (version bump), release artifacts via
@@ -179,3 +179,10 @@ failure turns out not to be the identifier check.
   instruction. Version bumped to `0.5.3` (Python, TypeScript client, docs,
   release note `docs/releases/v0.5.3.md`); task moved to review pending the
   Finance Vault T7 consumer proof (Slice 2).
+- 2026-09-19: Slice 2 evidence. `v0.5.3` published with verified assets
+  (`build_release.py --verify` on the downloaded set passed); Finance Vault
+  pinned both packages (commit `9877d7b`) and ran the MCP-002 T7 Chat journey
+  with the Terra profile in Orca's embedded browser: ten turns in one session
+  with repeated tool rounds, the second turn — which failed on `v0.5.2` with
+  `invalid_tool_request` — completed. Closed by owner instruction; the
+  Finance Vault task MCP-002 records the consumer proof.

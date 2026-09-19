@@ -9,9 +9,6 @@ No task is currently in implementation.
 
 ## Review lane
 
-- [LAR-012 - Scope tool request identity per turn](./LAR-012-scope-tool-request-identity-per-turn.md)
-  - Pi review passed; `v0.5.3` released on owner authorization; the Finance
-    Vault T7 consumer proof completes Slice 2.
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane
@@ -20,6 +17,9 @@ No additional task is approved.
 
 ## Completed
 
+- [LAR-012 - Scope tool request identity per turn](./done/LAR-012-scope-tool-request-identity-per-turn.md)
+  - immutable public `v0.5.3` accepting per-turn tool request identity reuse;
+    Finance Vault consumer proof recorded in its MCP-002 T7 journey.
 - [LAR-010 - Harden LM Studio request compatibility](./done/LAR-010-normalize-lm-studio-grammar-schemas.md)
   - immutable public `v0.5.2` with stable, redacted LM Studio context-window
     classification and retained `v0.5.1` schema/effort compatibility.
