@@ -45,7 +45,7 @@ class FakeRuntime {
   modelOptionCalls = 0;
 
   async health() {
-    return { status: "available", package_version: "0.5.3", api_version: "1.5.0" };
+    return { status: "available", package_version: "0.6.0", api_version: "1.5.0" };
   }
 
   async profiles(includeHealth = false, signal = undefined, includeDiscovery = false) {
@@ -929,7 +929,7 @@ test("HTTP adapter rejects non-literal-loopback binds at runtime", () => {
 test("SSE connects while idle and host shutdown closes the stream", async () => {
   const agent = {
     async health() {
-      return { status: "available", runtimeVersion: "0.5.3", apiVersion: "1.5.0" };
+      return { status: "available", runtimeVersion: "0.6.0", apiVersion: "1.5.0" };
     },
     async profiles() {
       return { selectedProfile: "local", profiles: [] };

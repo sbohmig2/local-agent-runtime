@@ -1,18 +1,18 @@
 ---
 tracker: LAR-011
 component: agent-runtime
-status: review
+status: done
 priority: P1
 effort: M
 parallel_safe: no
 created: 2026-09-16
-updated: 2026-09-16
+updated: 2026-09-19
 tags: [lar, context, recovery]
 ---
 
 # LAR-011 - Bound conversation context without breaking continuity
 
-**Status:** Review
+**Status:** Done
 **Priority:** P1 - unblock reliable multi-turn consumer conversations
 **Effort:** M
 
@@ -139,6 +139,29 @@ Release/promotion remains a separate owner gate.
 - `clients/typescript/` — public client and host contracts if required.
 
 ## Progress Notes
+
+- 2026-09-19: Closed. The review candidate was committed on
+  `sbohmig2/lar-011-bound-context` (`7d34527`) and rebased onto `main` after
+  LAR-012 (`efd308d`); the full gate on the rebased candidate passed (339
+  Python tests, one skip; 52 TypeScript tests; contracts current). Codex Sol
+  performed the confirming independent review (attempt 3, snapshot
+  `14ef8d18…`, `git range-diff` showed the LAR-011 patch unchanged by the
+  rebase): every scope and acceptance item addressed except the live Finance
+  Vault journey, which the isolated review could not rerun and whose recorded
+  candidate evidence it found internally consistent; CR-001/CR-002/CR-006
+  remain resolved; LAR-012's per-turn tool-request identity does not interact
+  with context planning, whole-turn retention, replay safety or opacity;
+  verdict `READY TO CLOSE`. Advisory follow-ups stay open for a later task:
+  CR-003 (an irreducible follow-up is retained in a terminally failed session,
+  unlike the synchronous opening refusal), CR-004 (a refused plan can leave
+  `context.reduced: true` although nothing was sent), CR-005 (opening-turn
+  preflight uses the generic estimate, not the adapter's `prompt_chars`),
+  CR-007 (quadratic suffix measurement on very long transcripts; stale test
+  name `test_unknown_capacity_changes_nothing_and_retained_limits_still_apply`)
+  and CR-008 (the `context.py` module docstring omits the character-ceiling
+  pruning under unknown capacity). Released as `v0.6.0` / API `1.5.0` on the
+  owner's closure instruction ("please bring this to close"); Finance Vault
+  pins both packages in the same session.
 
 - 2026-09-16: Claude remediated the accepted formal-review findings CR-001,
   CR-002 and CR-006 without touching CR-003/4/5/7. CR-001: the TypeScript host's

@@ -239,11 +239,10 @@ host event with camelCase counts; an unknown-capacity reduction keeps
 
 ## Artifact compatibility
 
-The current immutable Python and TypeScript release is version `0.5.3` with API
-`1.4.0`; development head keeps package version `0.5.3` and advances the API
-additively to `1.5.0` (session `context`, `context_reduced`) ahead of the next
-release. The host toolkit compares the API version exactly, so a candidate
-runtime needs the candidate client from the same build. A consumer pins both
+The current immutable Python and TypeScript release is version `0.6.0` with API
+`1.5.0` (session `context`, `context_reduced` added additively over `1.4.0`).
+The host toolkit compares the API version exactly, so a candidate runtime needs
+the candidate client from the same build. A consumer pins both
 artifacts from the same release and keeps its lockfiles. Upgrade work should:
 
 1. install the new artifacts in a branch;

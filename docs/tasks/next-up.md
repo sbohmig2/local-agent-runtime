@@ -9,10 +9,6 @@ No task is currently in implementation.
 
 ## Review lane
 
-- [LAR-011 - Bound conversation context](./LAR-011-bound-conversation-context.md)
-  - Mature runtime and isolated Finance Vault integration gates passed; fresh
-    independent review is next. Release and consumer promotion remain separately
-    gated.
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane
@@ -21,6 +17,9 @@ No additional task is approved.
 
 ## Completed
 
+- [LAR-011 - Bound conversation context](./done/LAR-011-bound-conversation-context.md)
+  - immutable public `v0.6.0` / API `1.5.0` with capacity-bounded per-call
+    context, whole-turn retention and counts-only reduction disclosure.
 - [LAR-012 - Scope tool request identity per turn](./done/LAR-012-scope-tool-request-identity-per-turn.md)
   - immutable public `v0.5.3` accepting per-turn tool request identity reuse;
     Finance Vault consumer proof recorded in its MCP-002 T7 journey.

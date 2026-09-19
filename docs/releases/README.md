@@ -14,4 +14,5 @@ owned operations.
 - [v0.5.1](./v0.5.1.md) - LM Studio schema compatibility and catalog-option effort validation.
 - [v0.5.2](./v0.5.2.md) - stable, redacted LM Studio context-window failure classification.
 - [v0.5.3](./v0.5.3.md) - tool request identity scoped to the turn, not the session.
+- [v0.6.0](./v0.6.0.md) - capacity-bounded conversation context with explicit, counts-only reductions.
 - [v0.2.0](./v0.2.0.md) - model selection, reasoning controls, and managed adapter catalog.
