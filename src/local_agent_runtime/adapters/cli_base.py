@@ -12,7 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from local_agent_runtime.adapters.cli_codec import _bounded_prompt, _output_schema, _parse_envelope
+from local_agent_runtime.adapters.cli_codec import (
+    _bounded_prompt,
+    _output_schema,
+    _parse_envelope,
+    cli_prompt_chars,
+)
 from local_agent_runtime.adapters.cli_environment import _safe_environment
 from local_agent_runtime.adapters.process import (
     JsonRpcProcessRunner,
@@ -193,6 +198,11 @@ class CLIAdapterBase(ABC):
                 compatible=None,
                 detail_code="health_probe_failed",
             )
+
+    def prompt_chars(self, invocation: Invocation) -> int:
+        """Exactly what `_bounded_prompt` bounds for this invocation."""
+
+        return cli_prompt_chars(invocation)
 
     async def complete(self, invocation: Invocation) -> CompletionResult:
         executable = self.executable()

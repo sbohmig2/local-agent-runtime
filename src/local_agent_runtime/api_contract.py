@@ -2,7 +2,7 @@
 
 from typing import Any
 
-API_VERSION = "1.4.0"
+API_VERSION = "1.5.0"
 
 
 def ref(name: str) -> dict[str, str]:
@@ -247,11 +247,26 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "effective_reasoning_effort": NULLABLE_REASONING_EFFORT,
             "usage": USAGE,
             "limits": ref("ReasoningLimits"),
+            "context": ref("SessionContext"),
             "validation": {
                 "type": "string",
                 "enum": ["pending", "passed", "failed", "not_validated"],
             },
             "event_count": INTEGER,
+        }
+    ),
+    "SessionContext": obj(
+        {
+            "capacity_tokens": {"type": ["integer", "null"]},
+            "capacity_source": {"type": "string", "enum": ["provider_loaded", "unknown"]},
+            "estimated_prompt_tokens": {"type": ["integer", "null"]},
+            "basis": {
+                "anyOf": [{"type": "string", "enum": ["estimate", "calibrated"]}, {"type": "null"}]
+            },
+            "reduced": BOOL,
+            "dropped_messages": INTEGER,
+            "configured_output_tokens": {"type": ["integer", "null"]},
+            "allocated_output_tokens": {"type": ["integer", "null"]},
         }
     ),
     "SessionEvent": obj(

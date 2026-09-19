@@ -17,7 +17,12 @@ import type {
   ToolAuthorizer,
   ToolCatalog
 } from "./contracts.js";
-import { toPublicAdapterCatalog, toPublicModelOptions, toPublicProfile } from "./contracts.js";
+import {
+  toHostSessionContext,
+  toPublicAdapterCatalog,
+  toPublicModelOptions,
+  toPublicProfile
+} from "./contracts.js";
 import { HostError, safeError } from "./errors.js";
 
 const MAX_PROMPT_CHARS = 140_000;
@@ -619,6 +624,40 @@ export class SessionCoordinator {
         throw new HostError("invalid_runtime_event", 502);
       }
       this.addEvent(record, "assistant_text_delta", { round, delta });
+    } else if (event.type === "context_reduced") {
+      // Counts only: the runtime never exposes which content left the prompt.
+      // Unknown capacity is truthfully null for the capacity and budget counts
+      // (the character ceiling alone pruned); every other count is an integer.
+      const detail: Record<string, unknown> = {};
+      for (const [key, name, nullable] of [
+        ["round", "round", false],
+        ["dropped_messages", "droppedMessages", false],
+        ["dropped_turns", "droppedTurns", false],
+        ["retained_messages", "retainedMessages", false],
+        ["estimated_prompt_tokens", "estimatedPromptTokens", false],
+        ["capacity_tokens", "capacityTokens", true],
+        ["budget_tokens", "budgetTokens", true],
+        ["configured_output_tokens", "configuredOutputTokens", false],
+        ["allocated_output_tokens", "allocatedOutputTokens", false]
+      ] as const) {
+        const value = event.payload[key];
+        if (value === undefined) continue;
+        if (!Number.isSafeInteger(value) && !(nullable && value === null)) {
+          throw new HostError("invalid_runtime_event", 502);
+        }
+        detail[name] = value;
+      }
+      const droppedMessages = Number(detail.droppedMessages);
+      const outputReduced =
+        Number.isSafeInteger(detail.allocatedOutputTokens) &&
+        Number.isSafeInteger(detail.configuredOutputTokens) &&
+        Number(detail.allocatedOutputTokens) < Number(detail.configuredOutputTokens);
+      if (!Number.isSafeInteger(detail.droppedMessages) || (droppedMessages < 1 && !outputReduced)) {
+        throw new HostError("invalid_runtime_event", 502);
+      }
+      const basis = event.payload.basis;
+      if (basis === "estimate" || basis === "calibrated") detail.basis = basis;
+      this.addEvent(record, "context_reduced", detail);
     } else if (event.type === "tool_requests") {
       const requests = Array.isArray(event.payload.requests) ? event.payload.requests : [];
       this.addEvent(record, "tools_requested", {
@@ -640,6 +679,7 @@ export class SessionCoordinator {
     record.public.effectiveUpstream = state.effective_upstream;
     record.public.effectiveReasoningEffort = state.effective_reasoning_effort;
     record.public.finalText = state.final_text;
+    if (state.context !== undefined) record.public.context = toHostSessionContext(state.context);
   }
 
   private publicSession(
@@ -661,7 +701,8 @@ export class SessionCoordinator {
       status,
       finalText: state.final_text,
       failureCode: state.failure?.code ?? null,
-      eventCount: 0
+      eventCount: 0,
+      ...(state.context === undefined ? {} : { context: toHostSessionContext(state.context) })
     };
   }
 

@@ -32,6 +32,27 @@ web-search tool through the ordinary tool-call contract.
 | LM Studio | `reasoning_effort` request field | minimal, low, medium, high | Compatible plus typed native loopback catalogs |
 | OpenRouter | Out of scope for now | None | Out of scope for now |
 
+| Route | Context capacity evidence | Exact prompt sizing (`prompt_chars`) |
+|---|---|---|
+| Codex | Unknown; no token budget, only the profile's `max_input_chars` bounds each call's window | The bounded CLI prompt |
+| Claude | Unknown; no token budget, only the profile's `max_input_chars` bounds each call's window | The bounded CLI prompt |
+| Grok | Unknown; no token budget, only the profile's `max_input_chars` bounds each call's window | The bounded CLI prompt |
+| LM Studio | Loaded instance `config.context_length` from the native `/api/v1/models` catalog for the exact configured model; never `max_context_length` | The larger of the streaming and non-streaming chat bodies |
+| OpenRouter | Unknown; no token budget, only the profile's `max_input_chars` bounds each call's window | The chat body |
+
+Known capacity bounds one provider call's prompt to the loaded context minus
+the profile's `max_output_tokens` and a margin; a small loaded context (below
+128,000 tokens) under pressure may run one call with a reported smaller output
+allocation instead. With or without capacity evidence the same window must
+also fit the profile's `max_input_chars`, measured by the route's exact sizing
+above, so an unknown-capacity route can still drop whole earlier turns under
+character pressure and reports that reduction with `null` capacity and budget.
+The retained transcript and the configured limits are untouched. A mandatory
+window the character ceiling cannot hold fails as `input_limit_exceeded`, and
+one the token budget cannot hold as `context_window_exceeded`, before any
+request; each route's own serialized-body check stays as the final refusal. See
+[context capacity and bounded history](../architecture/provider-adapters.md#context-capacity-and-bounded-history).
+
 That column is what the route can transmit, not task qualification.
 `catalog_model_tasks` explicitly qualifies the runtime-issued reasoning catalog
 for named tasks without copying model identifiers into a consumer.

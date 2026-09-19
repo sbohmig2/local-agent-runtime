@@ -10,13 +10,25 @@ from local_agent_runtime.contracts import CompletionResult, Invocation, ModelPro
 from local_agent_runtime.errors import RuntimeFailure, provider_unavailable
 
 
-def _bounded_prompt(invocation: Invocation, *, allow_provider_native_web: bool = False) -> str:
+def cli_payload(invocation: Invocation) -> str:
+    """The exact serialized payload a CLI prompt embeds and bounds."""
+
     payload = {
         "messages": [message.public_dict() for message in invocation.messages],
         "tools": [tool.public_dict() for tool in invocation.tools],
         "final_content_json_schema": invocation.output_schema,
     }
-    serialized = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+def cli_prompt_chars(invocation: Invocation) -> int:
+    """Size an invocation exactly as `_bounded_prompt` would, without applying the limit."""
+
+    return len(cli_payload(invocation))
+
+
+def _bounded_prompt(invocation: Invocation, *, allow_provider_native_web: bool = False) -> str:
+    serialized = cli_payload(invocation)
     if len(serialized) > invocation.limits.max_input_chars:
         raise RuntimeFailure("input_limit_exceeded", "The session input exceeds its limit")
     names = ", ".join(tool.name for tool in invocation.tools) or "none"

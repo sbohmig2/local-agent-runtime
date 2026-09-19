@@ -187,10 +187,63 @@ reused, but products should not share sessions or one bearer token. The gateway
 also rejects non-loopback peers, unapproved browser Origins, invalid Hosts, and
 unauthenticated requests.
 
+## Context capacity and reductions
+
+API `1.5.0` adds a `context` object to every session response and a
+`context_reduced` event. The runtime keeps the whole transcript; each provider
+call sends the instructions, the entire current turn with every tool request
+and result since its user message, and then as many complete earlier turns,
+newest-first, as fit the loaded model's context when the provider reports it
+(LM Studio only today) and the profile's `max_input_chars` in every case.
+`context.capacity_tokens` and `capacity_source`
+state the evidence, `estimated_prompt_tokens` and `basis` state the size
+estimate (`calibrated` once the provider has reported a prompt size for the
+previous call), and `reduced` and `dropped_messages` describe the most recent
+call. Both bases are estimates, not upper bounds; the runtime prunes from an
+estimate and still classifies a provider-reported overflow truthfully.
+`context_reduced` carries the same counts per round and never content.
+Unknown capacity applies no token budget and reports `capacity_source: unknown`
+with `capacity_tokens: null`; the profile's `max_input_chars` still bounds each
+call's window, so such a call can be reduced, and its `context_reduced` event
+then carries `null` for `capacity_tokens` and `budget_tokens`.
+
+`context.configured_output_tokens` is the profile's `max_output_tokens` and
+`context.allocated_output_tokens` is what the most recent call could generate.
+They differ only when the loaded context is small (below 128,000 tokens) and
+the required prompt could not fit beside the configured allowance: that one
+call runs with the remaining space, never below `min(max_output_tokens, 2048)`,
+and the next roomy call regains the configured value. The session's `limits`
+never change. The allocated value is the maximum the call was sent with, not
+what the model consumed; a failed plan sends nothing and keeps the configured
+value. Such an allocation also emits `context_reduced`, with both values
+in its payload, even when no message was dropped. A provider that stops at the
+allocated length fails the call as `provider_incomplete`; a truncated answer is
+never reported as complete and no partial tool call is executed.
+
+A consumer that needs particular context on every turn, such as an active
+working state, includes it in the current user turn rather than relying on
+earlier messages staying in the prompt. Nothing the runtime drops from a prompt
+is re-executed. The profile's `max_input_chars` bounds incoming input where it
+arrives (the opening turn as a whole and each follow-up prompt; a tool result
+has its own fixed limit and then joins the current turn) and each call's
+serialized request as the adapter itself sizes it, not the retained
+transcript, which may grow beyond it up to the session event limit. If the
+mandatory window (instructions plus the entire current
+turn) cannot fit, the session fails before any provider request:
+`context_window_exceeded` when the model's capacity is the limit and
+`input_limit_exceeded` when the character ceiling is. The TypeScript host
+exposes the same data as `HostSession.context` (including
+`configuredOutputTokens` and `allocatedOutputTokens`) and a `context_reduced`
+host event with camelCase counts; an unknown-capacity reduction keeps
+`capacityTokens` and `budgetTokens` as `null` there.
+
 ## Artifact compatibility
 
 The current immutable Python and TypeScript release is version `0.5.3` with API
-`1.4.0`; development head uses the same versions. A consumer pins both
+`1.4.0`; development head keeps package version `0.5.3` and advances the API
+additively to `1.5.0` (session `context`, `context_reduced`) ahead of the next
+release. The host toolkit compares the API version exactly, so a candidate
+runtime needs the candidate client from the same build. A consumer pins both
 artifacts from the same release and keeps its lockfiles. Upgrade work should:
 
 1. install the new artifacts in a branch;

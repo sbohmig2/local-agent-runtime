@@ -925,6 +925,73 @@
         ],
         "type": "object"
       },
+      "SessionContext": {
+        "additionalProperties": false,
+        "properties": {
+          "allocated_output_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "basis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "estimate",
+                  "calibrated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "capacity_source": {
+            "enum": [
+              "provider_loaded",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "capacity_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "configured_output_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "dropped_messages": {
+            "type": "integer"
+          },
+          "estimated_prompt_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reduced": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "capacity_tokens",
+          "capacity_source",
+          "estimated_prompt_tokens",
+          "basis",
+          "reduced",
+          "dropped_messages",
+          "configured_output_tokens",
+          "allocated_output_tokens"
+        ],
+        "type": "object"
+      },
       "SessionEvent": {
         "additionalProperties": false,
         "properties": {
@@ -1006,6 +1073,9 @@
         "properties": {
           "adapter": {
             "type": "string"
+          },
+          "context": {
+            "$ref": "#/components/schemas/SessionContext"
           },
           "created_at": {
             "type": "string"
@@ -1179,6 +1249,7 @@
           "effective_reasoning_effort",
           "usage",
           "limits",
+          "context",
           "validation",
           "event_count"
         ],
@@ -1338,7 +1409,7 @@
   },
   "info": {
     "title": "Local Agent Runtime",
-    "version": "1.4.0"
+    "version": "1.5.0"
   },
   "openapi": "3.1.0",
   "paths": {

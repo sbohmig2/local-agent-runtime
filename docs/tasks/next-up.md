@@ -9,6 +9,10 @@ No task is currently in implementation.
 
 ## Review lane
 
+- [LAR-011 - Bound conversation context](./LAR-011-bound-conversation-context.md)
+  - Mature runtime and isolated Finance Vault integration gates passed; fresh
+    independent review is next. Release and consumer promotion remain separately
+    gated.
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane

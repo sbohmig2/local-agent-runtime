@@ -89,6 +89,18 @@ class Capabilities:
 
 
 @dataclass(frozen=True)
+class ContextWindow:
+    """Prompt capacity of the exact configured model as the provider reports it.
+
+    `tokens` is the loaded context length, never a maximum the model could be
+    loaded with. Unknown capacity is reported as unknown, not fabricated.
+    """
+
+    tokens: int | None = None
+    source: str = "unknown"
+
+
+@dataclass(frozen=True)
 class ProviderConnection:
     id: str
     driver: str

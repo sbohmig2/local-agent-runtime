@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from local_agent_runtime.adapters.http_transport import response_identity, safe_usage
@@ -63,12 +63,22 @@ def chat_body(
                 "schema": dict(invocation.output_schema),
             },
         }
-    if (
-        len(json.dumps(body, ensure_ascii=False, allow_nan=False))
-        > invocation.limits.max_input_chars
-    ):
+    if chat_body_chars(body) > invocation.limits.max_input_chars:
         raise RuntimeFailure("input_limit_exceeded", "The session input exceeds its limit")
     return body
+
+
+def chat_body_chars(body: Mapping[str, Any]) -> int:
+    """The exact size `chat_body` bounds: what the request serializes to."""
+
+    return len(json.dumps(body, ensure_ascii=False, allow_nan=False))
+
+
+def chat_prompt_chars(profile: ModelProfile, invocation: Invocation, *, stream: bool) -> int:
+    """Size an invocation exactly as `chat_body` would, without applying the limit."""
+
+    unbounded = replace(invocation, limits=replace(invocation.limits, max_input_chars=2**62))
+    return chat_body_chars(chat_body(profile, unbounded, stream=stream))
 
 
 def decode_chat(payload: dict[str, Any], invocation: Invocation) -> CompletionResult:

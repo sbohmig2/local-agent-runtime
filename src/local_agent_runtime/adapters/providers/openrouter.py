@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from local_agent_runtime.adapters.chat_codec import chat_body, decode_chat
+from local_agent_runtime.adapters.chat_codec import chat_body, chat_prompt_chars, decode_chat
 from local_agent_runtime.adapters.http_transport import ClientFactory, default_client, request_json
 from local_agent_runtime.adapters.providers.openrouter_policy import (
     headers,
@@ -76,6 +76,11 @@ class OpenRouterAdapter:
                 compatible=None,
                 detail_code=exc.code,
             )
+
+    def prompt_chars(self, invocation: Invocation) -> int:
+        """Exactly what `chat_body` bounds; the routing block is added after that check."""
+
+        return chat_prompt_chars(self.profile, invocation, stream=False)
 
     async def complete(self, invocation: Invocation) -> CompletionResult:
         if invocation.reasoning_effort is not None:

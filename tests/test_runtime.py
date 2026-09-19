@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -13,13 +14,22 @@ from jsonschema import Draft202012Validator
 
 import local_agent_runtime.gateway as gateway_module
 import local_agent_runtime.service as service_module
+from local_agent_runtime.adapters.chat_codec import chat_body, chat_prompt_chars
+from local_agent_runtime.adapters.cli_codec import _bounded_prompt as cli_bounded_prompt
+from local_agent_runtime.adapters.cli_codec import cli_prompt_chars
 from local_agent_runtime.adapters.providers.lmstudio import LMStudioAdapter
 from local_agent_runtime.adapters.selection import SelectionStore
 from local_agent_runtime.api_contract import API_VERSION, SCHEMAS
 from local_agent_runtime.configuration import load_configuration
+from local_agent_runtime.context import (
+    INPUT_IRREDUCIBLE_MESSAGE,
+    IRREDUCIBLE_MESSAGE,
+    RESERVE_MESSAGE,
+)
 from local_agent_runtime.contracts import (
     Capabilities,
     CompletionResult,
+    ContextWindow,
     HealthStatus,
     Invocation,
     Limits,
@@ -77,10 +87,37 @@ class FakeProvider:
             ReasoningEffort.LOW,
             ReasoningEffort.HIGH,
         )
+        self.context_tokens: int | None = None
+        self.context_probe_hangs = False
+        self.context_probe_failure: Exception | None = None
+        self.context_probes = 0
+        self.context_raw: object = None
+        # The exact-sizing port: the larger of the two shipped request shapes, or a
+        # scripted value (an invalid one proves the contract is checked).
+        self.prompt_size: object = None
+
+    def prompt_chars(self, invocation: Invocation) -> int:
+        if self.prompt_size is not None:
+            return self.prompt_size  # type: ignore[return-value]
+        return max(
+            chat_prompt_chars(self.profile, invocation, stream=True), cli_prompt_chars(invocation)
+        )
 
     @property
     def reasoning_efforts(self) -> tuple[ReasoningEffort, ...]:
         return self.efforts
+
+    async def context_window(self) -> object:
+        self.context_probes += 1
+        if self.context_probe_failure is not None:
+            raise self.context_probe_failure
+        if self.context_probe_hangs:
+            await asyncio.sleep(3600)
+        if self.context_raw is not None:
+            return self.context_raw
+        if self.context_tokens is None:
+            return ContextWindow()
+        return ContextWindow(self.context_tokens, "provider_loaded")
 
     async def discover_models(self) -> ModelDiscovery:
         assert not self.probes_forbidden, "A plain catalog must stay offline"
@@ -1342,5 +1379,963 @@ def test_probes_run_concurrently_and_share_one_discovery_per_connection(
         assert all(
             item["discovery"]["models"] == ["model", "other-model"] for item in state["profiles"]
         )
+
+    asyncio.run(run())
+
+
+def bounded_runtime(
+    tmp_path: Path, limits: Limits, context_tokens: int | None
+) -> tuple[RuntimeService, FakeProvider]:
+    connection = ProviderConnection(
+        "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+    )
+    profile = ModelProfile("reason", "local", "model", False, True, limits)
+    config = RuntimeConfiguration(
+        {"local": connection}, {"reason": profile}, "reason", {"answer": "reason"}
+    )
+    fake = FakeProvider(connection, profile)
+    fake.context_tokens = context_tokens
+    return RuntimeService(
+        config, SelectionStore(tmp_path / "state"), provider_factory=lambda *_: fake
+    ), fake
+
+
+BOUNDED = Limits(max_output_tokens=100)
+LONG_PROMPT = "u" * 300
+INSTRUCTIONS = "i" * 30
+
+
+def test_long_conversation_keeps_instructions_and_a_recent_suffix(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, BOUNDED, 2_000)
+        created = await app.create_session(LONG_PROMPT, [TOOL], instructions=INSTRUCTIONS)
+        assert (await app.wait(created["id"]))["status"] == "completed"
+        for _ in range(11):
+            await app.continue_session(created["id"], LONG_PROMPT)
+            settled = await app.wait(created["id"])
+            assert settled["status"] == "completed"
+        record = app.sessions[created["id"]]
+        assert len(record.messages) == 1 + 12 * 2, "the retained transcript is complete"
+        sent = fake.invocations[-1].messages
+        assert sent[0] == record.messages[0] and sent[0].role == "system"
+        # The final assistant reply is appended after the call; the window sent
+        # is the newest suffix ending at the latest user message.
+        assert sent[1:] == tuple(record.messages[-len(sent) : -1])
+        assert sent[1].role == "user" and sent[-1].role == "user"
+        assert 3 < len(sent) < len(record.messages)
+        # Planned before the final assistant reply was appended.
+        dropped = len(record.messages) - 1 - len(sent)
+        assert settled["context"] == {
+            "capacity_tokens": 2_000,
+            "capacity_source": "provider_loaded",
+            "estimated_prompt_tokens": settled["context"]["estimated_prompt_tokens"],
+            "basis": "estimate",
+            "reduced": True,
+            "dropped_messages": dropped,
+            "configured_output_tokens": 100,
+            "allocated_output_tokens": 100,
+        }
+        assert settled["context"]["estimated_prompt_tokens"] <= 2_000 - 100 - 128
+        events = app.events(created["id"])
+        reductions = [event for event in events if event["type"] == "context_reduced"]
+        assert reductions and reductions[-1]["payload"] == {
+            "round": 12,
+            "dropped_messages": dropped,
+            "dropped_turns": dropped // 2,
+            "retained_messages": len(sent),
+            "estimated_prompt_tokens": settled["context"]["estimated_prompt_tokens"],
+            "capacity_tokens": 2_000,
+            "budget_tokens": 2_000 - 100 - 128,
+            "basis": "estimate",
+            "configured_output_tokens": 100,
+            "allocated_output_tokens": 100,
+        }
+        assert "uuu" not in json.dumps(reductions) and "iii" not in json.dumps(reductions)
+        assert [event["type"] for event in events[-3:]] == [
+            "provider_started",
+            "context_reduced",
+            "session_completed",
+        ]
+        assert_schema("SessionResponse", settled)
+        assert_schema("EventsResponse", {"events": events})
+        assert fake.context_probes == 12
+
+    asyncio.run(run())
+
+
+def test_current_turn_tool_groups_survive_pruning_without_replay(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, BOUNDED, None)
+        created = await app.create_session(LONG_PROMPT, [TOOL], instructions=INSTRUCTIONS)
+        await app.wait(created["id"])
+        for _ in range(2):
+            await app.continue_session(created["id"], LONG_PROMPT)
+            await app.wait(created["id"])
+        assert all(
+            len(item.messages) == index * 2 + 2 for index, item in enumerate(fake.invocations)
+        )
+        fake.context_tokens = 1_400
+        fake.result = CompletionResult("", (ToolRequest("call-1", "lookup", {"id": 1}),), "model")
+        waiting = await app.continue_session(created["id"], LONG_PROMPT)
+        assert (await app.wait(waiting["id"]))["status"] == "waiting_for_tool"
+        fake.result = CompletionResult("answer", (), "model")
+        await app.submit_tool_results(
+            created["id"], [ToolResult("call-1", "lookup", {"value": "r" * 600})]
+        )
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed"
+        record = app.sessions[created["id"]]
+        assert len(fake.invocations) == 5
+        sent = fake.invocations[-1].messages
+        assert [message.role for message in sent] == ["system", "user", "assistant", "tool"]
+        assert sent[1:] == tuple(record.messages[-4:-1])
+        assert sent[2].tool_requests[0].id == "call-1"
+        assert sent[3].tool_request_id == "call-1"
+        assert settled["pending_tools"] == [] and settled["tool_rounds"] == 1
+        events = app.events(created["id"])
+        assert sum(event["type"] == "tool_results_received" for event in events) == 1
+        assert sum(event["type"] == "tool_requests" for event in events) == 1
+        final = [event for event in events if event["type"] == "context_reduced"][-1]
+        assert final["payload"]["dropped_turns"] == 3
+        assert final["payload"]["retained_messages"] == 4
+        assert settled["context"]["dropped_messages"] == 6
+
+    asyncio.run(run())
+
+
+def test_irreducible_input_fails_before_any_provider_call(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, BOUNDED, 800)
+        created = await app.create_session(LONG_PROMPT, [TOOL], instructions=INSTRUCTIONS)
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "failed"
+        assert settled["failure"] == {
+            "code": "context_window_exceeded",
+            "message": IRREDUCIBLE_MESSAGE,
+        }
+        assert fake.invocations == []
+        assert settled["context"]["capacity_tokens"] == 800
+        assert settled["context"]["reduced"] is False
+        assert settled["context"]["estimated_prompt_tokens"] > 800 - 100 - 128
+        assert [event["type"] for event in app.events(created["id"])] == [
+            "session_created",
+            "provider_started",
+            "session_failed",
+        ]
+        assert_schema("SessionResponse", settled)
+
+        # A small context first tries a smaller allocation; 2000-128-650 = 1222
+        # is under the 2048 floor, so the request is irreducible.
+        app, fake = bounded_runtime(tmp_path / "small", Limits(max_output_tokens=4_096), 2_000)
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["failure"] == {
+            "code": "context_window_exceeded",
+            "message": IRREDUCIBLE_MESSAGE,
+        }
+        assert fake.invocations == []
+        assert settled["context"]["allocated_output_tokens"] == 4_096
+        # A large context never reallocates output and reports the reserve problem.
+        app, fake = bounded_runtime(
+            tmp_path / "reserve", Limits(max_output_tokens=300_000), 200_000
+        )
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["failure"] == {
+            "code": "context_window_exceeded",
+            "message": RESERVE_MESSAGE,
+        }
+        assert fake.invocations == []
+
+    asyncio.run(run())
+
+
+def test_unknown_capacity_changes_nothing_and_retained_limits_still_apply(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, BOUNDED, None)
+        created = await app.create_session(LONG_PROMPT, [TOOL], instructions=INSTRUCTIONS)
+        await app.wait(created["id"])
+        for _ in range(11):
+            await app.continue_session(created["id"], LONG_PROMPT)
+            settled = await app.wait(created["id"])
+        record = app.sessions[created["id"]]
+        assert fake.invocations[-1].messages == tuple(record.messages[:-1])
+        assert settled["context"]["capacity_source"] == "unknown"
+        assert settled["context"]["capacity_tokens"] is None
+        assert settled["context"]["reduced"] is False
+        assert settled["context"]["basis"] == "estimate"
+        assert type(settled["context"]["estimated_prompt_tokens"]) is int
+        assert not any(event["type"] == "context_reduced" for event in app.events(created["id"]))
+
+    asyncio.run(run())
+
+
+def _serialized_chars(messages: Sequence[Message]) -> int:
+    return len(json.dumps([item.public_dict() for item in messages], separators=(",", ":")))
+
+
+# A ceiling the pruned window fits but a longer retained transcript outgrows.
+CHAR_LIMITS = Limits(max_output_tokens=100, max_input_chars=4_800)
+
+
+def assert_accepted_by_both_adapters(profile: ModelProfile, invocation: Invocation) -> None:
+    """The planned window passes the exact send-time checks of both adapter families."""
+    for stream in (False, True):
+        body = chat_body(profile, invocation, stream=stream)
+        assert len(json.dumps(body, ensure_ascii=False)) <= invocation.limits.max_input_chars
+    assert len(cli_bounded_prompt(invocation)) > 0
+
+
+async def _long_transcript(app: RuntimeService, turns: int) -> dict[str, Any]:
+    created = await app.create_session(LONG_PROMPT, instructions=INSTRUCTIONS)
+    await app.wait(created["id"])
+    settled: dict[str, Any] = created
+    for _ in range(turns):
+        await app.continue_session(created["id"], LONG_PROMPT)
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed"
+    return settled
+
+
+def test_a_long_retained_transcript_is_pruned_per_call_not_refused_up_front(
+    tmp_path: Path,
+) -> None:
+    """The retained transcript may outgrow the input ceiling; each call is planned to fit.
+
+    Token capacity is roomy and large here, so the character ceiling alone prunes whole
+    earlier turns while the configured output allowance stays untouched.
+    """
+
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, CHAR_LIMITS, 200_000)
+        settled = await _long_transcript(app, 12)
+        record = app.sessions[settled["id"]]
+        assert len(record.messages) == 1 + 13 * 2
+        assert _serialized_chars(record.messages) > CHAR_LIMITS.max_input_chars
+        # Counts-only truthfulness: the reduction, its capacity evidence and the
+        # unchanged output allowance are all reported as they are.
+        assert settled["context"]["reduced"] is True
+        assert settled["context"]["dropped_messages"] > 0
+        assert settled["context"]["capacity_tokens"] == 200_000
+        assert settled["context"]["capacity_source"] == "provider_loaded"
+        assert settled["context"]["allocated_output_tokens"] == 100
+        assert settled["context"]["configured_output_tokens"] == 100
+        sent = fake.invocations[-1].messages
+        assert sent[0].role == "system" and sent[-1] == record.messages[-2]
+        assert 1 < len(sent) < len(record.messages)
+        assert any(event["type"] == "context_reduced" for event in app.events(settled["id"]))
+        # The planned window is what the adapter would send, and both adapter
+        # families accept it under their own unchanged checks.
+        assert_accepted_by_both_adapters(fake.profile, fake.invocations[-1])
+
+        # Incoming input keeps its own fail-closed ceiling: one over-long follow-up is
+        # refused before anything is retained or scheduled.
+        before = list(record.messages)
+        with pytest.raises(RuntimeFailure) as caught:
+            await app.continue_session(settled["id"], "u" * (CHAR_LIMITS.max_input_chars + 1))
+        assert caught.value.code == "invalid_request"
+        assert record.messages == before
+        assert app.session(settled["id"])["status"] == "completed"
+        with pytest.raises(RuntimeFailure) as caught:
+            await app.create_session("u" * (CHAR_LIMITS.max_input_chars + 1))
+        assert caught.value.code == "invalid_request"
+        # The opening turn is irreducible input as a whole: instructions plus prompt.
+        with pytest.raises(RuntimeFailure) as caught:
+            await app.create_session(
+                "u" * (CHAR_LIMITS.max_input_chars - 100), instructions="i" * 200
+            )
+        assert caught.value.code == "input_limit_exceeded"
+
+    asyncio.run(run())
+
+
+def test_unknown_capacity_still_prunes_under_character_pressure(tmp_path: Path) -> None:
+    """Without capacity evidence nothing is claimed about the model, but the profile's
+    character ceiling still selects whole earlier turns out so the call can be made."""
+
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, CHAR_LIMITS, None)
+        settled = await _long_transcript(app, 12)
+        record = app.sessions[settled["id"]]
+        assert _serialized_chars(record.messages) > CHAR_LIMITS.max_input_chars
+        assert settled["context"]["reduced"] is True
+        assert settled["context"]["dropped_messages"] > 0
+        assert settled["context"]["capacity_tokens"] is None
+        assert settled["context"]["capacity_source"] == "unknown"
+        assert settled["context"]["basis"] == "estimate"
+        assert settled["context"]["allocated_output_tokens"] == 100
+        sent = fake.invocations[-1].messages
+        assert sent[0].role == "system" and sent[-1] == record.messages[-2]
+        assert len(sent) < len(record.messages)
+        assert_accepted_by_both_adapters(fake.profile, fake.invocations[-1])
+        reductions = [e for e in app.events(settled["id"]) if e["type"] == "context_reduced"]
+        assert reductions and reductions[-1]["payload"]["capacity_tokens"] is None
+
+    asyncio.run(run())
+
+
+# Two synthetic consumer contexts of deliberately different shape and vocabulary: a
+# structured skill/action record and a prose procedure. Both are padded to one length
+# so the only way their plans could differ is content-based branching, which the
+# runtime must not have. Neither names a real resource, provider or product.
+_STRUCTURED_CONTEXT = json.dumps(
+    {
+        "skill": "alpha-holding",
+        "fields": [{"name": "quantity", "unit": "gram"}, {"name": "purity", "unit": "permille"}],
+        "action": {"id": "act-alpha-1", "state": "pending", "awaiting": "quantity"},
+    },
+    separators=(",", ":"),
+)
+_PROSE_CONTEXT = (
+    "Skill beta-account: ask for the account nickname, then confirm its currency "
+    "before staging anything. Active action act-beta-7 is waiting for the balance answer."
+)
+_CONTEXT_WIDTH = max(len(_STRUCTURED_CONTEXT), len(_PROSE_CONTEXT))
+OPAQUE_CONTEXTS = {
+    "structured-skill": (
+        _STRUCTURED_CONTEXT.ljust(_CONTEXT_WIDTH),
+        ("alpha-holding", "act-alpha-1"),
+    ),
+    "prose-procedure": (_PROSE_CONTEXT.ljust(_CONTEXT_WIDTH), ("beta-account", "act-beta-7")),
+}
+# Filler turns between the refreshed contexts: enough that a bounded window keeps
+# neither stale copy of the context, so only the current turn's copy can survive.
+OPAQUE_FILLER_TURNS = 10
+# Each ceiling sits about half a filler turn away from the nearest pruning boundary
+# for both contexts, so equal treatment is not an accident of one shape's framing.
+OPAQUE_CAPACITIES = {
+    "known-capacity": (BOUNDED, 2_000),
+    "unknown-capacity": (Limits(max_output_tokens=100, max_input_chars=3_800), None),
+}
+
+
+def _opaque_prompts(context: str) -> tuple[str, str, str]:
+    """The consumer supplies its complete context on every turn that needs it."""
+    return (
+        f"{context}\n\nWhat is pending?",
+        f"{context}\n\nStill pending?",
+        f"{context}\n\nAnything else?",
+    )
+
+
+async def _opaque_journey(
+    tmp_path: Path, limits: Limits, capacity: int | None, context: str
+) -> tuple[list[tuple[Any, ...]], RuntimeService, FakeProvider]:
+    """Initial, continued and reduced turns carrying one consumer context.
+
+    Returns the trace of how each provider call was planned: the roles sent, the
+    public context counts and the reduction events. Nothing in it depends on the
+    consumer's wording, so two contexts of the same size must produce equal traces.
+    """
+    app, fake = bounded_runtime(tmp_path, limits, capacity)
+    initial, continued, reduced = _opaque_prompts(context)
+    created = await app.create_session(initial, [TOOL], instructions=INSTRUCTIONS)
+    session_id = created["id"]
+    trace: list[tuple[Any, ...]] = []
+
+    async def step(name: str, prompt: str) -> None:
+        events_before = len(app.events(session_id))
+        settled = await app.wait(session_id)
+        assert settled["status"] == "completed", settled["failure"]
+        sent = fake.invocations[-1]
+        assert sent.messages[0].content == INSTRUCTIONS and sent.messages[0].role == "system"
+        assert sent.messages[-1].role == "user" and sent.messages[-1].content == prompt
+        assert sent.tools == app.sessions[session_id].tools, "permitted tools are unchanged"
+        reductions = [
+            event["payload"]
+            for event in app.events(session_id)[events_before:]
+            if event["type"] == "context_reduced"
+        ]
+        trace.append(
+            (
+                name,
+                tuple(message.role for message in sent.messages),
+                dict(settled["context"]),
+                reductions,
+            )
+        )
+
+    await step("initial", initial)
+    await app.continue_session(session_id, continued)
+    await step("continued", continued)
+    for _ in range(OPAQUE_FILLER_TURNS):
+        await app.continue_session(session_id, LONG_PROMPT)
+        assert (await app.wait(session_id))["status"] == "completed"
+    await app.continue_session(session_id, reduced)
+    await step("reduced", reduced)
+    return trace, app, fake
+
+
+@pytest.mark.parametrize("capacity_mode", list(OPAQUE_CAPACITIES), ids=list(OPAQUE_CAPACITIES))
+@pytest.mark.parametrize("shape", list(OPAQUE_CONTEXTS), ids=list(OPAQUE_CONTEXTS))
+def test_consumer_context_is_opaque_and_the_current_copy_survives_reduction(
+    tmp_path: Path, shape: str, capacity_mode: str
+) -> None:
+    """Consumer resource/action context is opaque input the runtime delivers verbatim,
+    never reads, never disclosed in counts-only reporting, and never replaced by a
+    built-in fallback when it is missing. Its current copy survives every reduction."""
+
+    context, markers = OPAQUE_CONTEXTS[shape]
+    limits, capacity = OPAQUE_CAPACITIES[capacity_mode]
+
+    async def run() -> None:
+        trace, app, fake = await _opaque_journey(tmp_path, limits, capacity, context)
+        initial, continued, reduced = _opaque_prompts(context)
+        session_id = next(iter(app.sessions))
+        record = app.sessions[session_id]
+        # The runtime forwards exactly the consumer's text and its own recorded replies;
+        # it adds no instruction, resource name, procedure or fallback of its own.
+        supplied = {INSTRUCTIONS, initial, continued, reduced, LONG_PROMPT, "answer"}
+        for invocation in fake.invocations:
+            assert {message.content for message in invocation.messages} <= supplied
+        assert [entry[1] for entry in trace[:2]] == [
+            ("system", "user"),
+            ("system", "user", "assistant", "user"),
+        ]
+        assert trace[0][2]["reduced"] is False and trace[1][2]["reduced"] is False
+        # Under pressure both stale copies of the context leave the window while the
+        # current turn's copy and the instructions are kept; nothing is re-executed.
+        name, roles, public_context, reductions = trace[2]
+        assert name == "reduced" and public_context["reduced"] is True
+        assert public_context["dropped_messages"] >= 4 and reductions
+        assert public_context["capacity_tokens"] == capacity
+        assert public_context["capacity_source"] == (
+            "unknown" if capacity is None else "provider_loaded"
+        )
+        assert roles[0] == "system" and roles[-1] == "user" and len(roles) < len(record.messages)
+        final = fake.invocations[-1].messages
+        assert [message.content for message in final].count(reduced) == 1
+        assert initial not in {message.content for message in final}
+        assert continued not in {message.content for message in final}
+        assert final[-1].content == reduced, "the refreshed context arrives intact"
+        assert_accepted_by_both_adapters(fake.profile, fake.invocations[-1])
+        # Counts only: neither the public session nor any event carries the consumer's
+        # context, and the provider/model route is unchanged by the reduction.
+        settled = app.session(session_id)
+        disclosed = json.dumps([settled, app.events(session_id)])
+        assert not any(marker in disclosed for marker in markers)
+        assert settled["provider_id"] == "local" and settled["effective_model"] == "model"
+        assert len(record.messages) == 1 + (3 + OPAQUE_FILLER_TURNS) * 2
+        # Missing context is refused by the public contract and nothing is invented.
+        before = list(record.messages)
+        with pytest.raises(RuntimeFailure) as caught:
+            await app.continue_session(session_id, "   ")
+        assert caught.value.code == "invalid_request"
+        assert record.messages == before
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("capacity_mode", list(OPAQUE_CAPACITIES), ids=list(OPAQUE_CAPACITIES))
+def test_differently_shaped_consumer_contexts_receive_identical_structural_treatment(
+    tmp_path: Path, capacity_mode: str
+) -> None:
+    """Two contexts that share nothing but their size are planned identically on every
+    turn: the runtime has no resource-specific branch, wording or policy."""
+
+    limits, capacity = OPAQUE_CAPACITIES[capacity_mode]
+
+    async def run() -> None:
+        traces = {}
+        for shape, (context, _) in OPAQUE_CONTEXTS.items():
+            traces[shape], _, _ = await _opaque_journey(tmp_path / shape, limits, capacity, context)
+        structured, prose = traces.values()
+        assert structured == prose
+        assert structured[-1][2]["reduced"] is True
+
+    asyncio.run(run())
+
+
+def test_an_irreducible_current_turn_fails_explicitly_without_a_provider_call(
+    tmp_path: Path,
+) -> None:
+    """A current turn that cannot fit the character ceiling on its own is refused as
+    input_limit_exceeded by the plan: the provider is not called, nothing is dropped
+    silently, and the transcript stays retained."""
+
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, CHAR_LIMITS, 200_000)
+        fake.result = CompletionResult("", (ToolRequest("one", "lookup", {"id": 1}),), "model")
+        created = await app.create_session(LONG_PROMPT, [TOOL], instructions=INSTRUCTIONS)
+        waiting = await app.wait(created["id"])
+        assert waiting["status"] == "waiting_for_tool"
+        calls = len(fake.invocations)
+        # One tool result within its own limit, but the whole current turn (prompt, the
+        # tool request and this result) can no longer fit the ceiling.
+        oversized = ToolResult("one", "lookup", {"value": "v" * CHAR_LIMITS.max_input_chars})
+        await app.submit_tool_results(created["id"], [oversized])
+        failed = await app.wait(created["id"])
+        assert failed["status"] == "failed"
+        assert failed["failure"]["code"] == "input_limit_exceeded"
+        assert failed["failure"]["message"] == INPUT_IRREDUCIBLE_MESSAGE
+        assert len(fake.invocations) == calls, "the provider was not called"
+        record = app.sessions[created["id"]]
+        assert record.messages[-1].role == "tool" and len(record.messages) == 4
+        assert failed["context"]["reduced"] is False
+
+    asyncio.run(run())
+
+
+def test_adapter_serialized_body_limits_remain_the_final_refusal() -> None:
+    """Planning never replaces the adapters' own fail-closed check on what they send."""
+    profile = ModelProfile("profile", "provider", "model", False, True)
+    window = tuple(Message("user", "u" * 300) for _ in range(4))
+    accepted = Invocation(window, (), Limits(max_input_chars=4_800))
+    assert chat_body(profile, accepted)["messages"][0]["content"] == "u" * 300
+    tighter = Invocation(window, (), Limits(max_input_chars=1_000))
+    with pytest.raises(RuntimeFailure) as caught:
+        chat_body(profile, tighter)
+    assert caught.value.code == "input_limit_exceeded"
+    with pytest.raises(RuntimeFailure) as caught:
+        cli_bounded_prompt(tighter)
+    assert caught.value.code == "input_limit_exceeded"
+
+
+def test_planning_uses_the_adapters_exact_size_so_a_heavier_wire_shape_is_never_admitted(
+    tmp_path: Path,
+) -> None:
+    """A window the public form sizes as fitting can still exceed the chat wire shape
+    (tool-call arguments are re-encoded as JSON strings there). Planning measures with
+    the adapter's own size, so the sent window is one the adapter accepts."""
+    search = ToolDefinition(
+        "search",
+        "Search a phrase",
+        {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+    )
+
+    async def conversation(app: RuntimeService, fake: FakeProvider) -> tuple[str, dict[str, Any]]:
+        quotes = '"' * 600
+        fake.result = CompletionResult("", (ToolRequest("one", "search", {"q": quotes}),), "model")
+        created = await app.create_session("find", [search], instructions=INSTRUCTIONS)
+        assert (await app.wait(created["id"]))["status"] == "waiting_for_tool"
+        fake.result = CompletionResult("found", (), "model")
+        await app.submit_tool_results(created["id"], [ToolResult("one", "search", {"value": 1})])
+        assert (await app.wait(created["id"]))["status"] == "completed"
+        settled: dict[str, Any] = {}
+        for _ in range(6):
+            await app.continue_session(created["id"], LONG_PROMPT)
+            settled = await app.wait(created["id"])
+            assert settled["status"] == "completed"
+        return created["id"], settled
+
+    async def run() -> None:
+        # Measure the same conversation's two wire shapes under a roomy ceiling first.
+        roomy_app, roomy_fake = bounded_runtime(tmp_path / "roomy", BOUNDED, 200_000)
+        session_id, roomy_settled = await conversation(roomy_app, roomy_fake)
+        assert roomy_settled["context"]["reduced"] is False
+        whole = roomy_fake.invocations[-1]
+        compact = cli_prompt_chars(whole)
+        chat = chat_prompt_chars(roomy_fake.profile, whole, stream=True)
+        assert compact < chat, "the chat shape is the heavier one for this transcript"
+        limit = (compact + chat) // 2
+
+        limits = Limits(max_output_tokens=100, max_input_chars=limit)
+        app, fake = bounded_runtime(tmp_path / "pressured", limits, 200_000)
+        session_id, settled = await conversation(app, fake)
+        record = app.sessions[session_id]
+        pressured_whole = Invocation(tuple(record.messages[:-1]), record.tools, limits)
+        # The whole transcript fits the compact public form but not the chat wire shape...
+        assert cli_prompt_chars(pressured_whole) <= limit
+        assert chat_prompt_chars(fake.profile, pressured_whole, stream=True) > limit
+        # ...so the plan dropped turns, and what was sent is accepted by both adapters.
+        assert settled["context"]["reduced"] is True
+        sent = fake.invocations[-1]
+        assert len(sent.messages) < len(pressured_whole.messages)
+        assert_accepted_by_both_adapters(fake.profile, sent)
+
+    asyncio.run(run())
+
+
+def test_an_invalid_adapter_prompt_size_is_a_provider_contract_failure(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, CHAR_LIMITS, 200_000)
+        fake.prompt_size = "big"
+        created = await app.create_session(LONG_PROMPT, instructions=INSTRUCTIONS)
+        failed = await app.wait(created["id"])
+        assert failed["status"] == "failed"
+        assert failed["failure"]["code"] == "invalid_provider_contract"
+        assert fake.invocations == []
+        # A heavier-than-estimated adapter size is honored: nothing is sent that it rejects.
+        app, fake = bounded_runtime(tmp_path / "heavy", CHAR_LIMITS, 200_000)
+        fake.prompt_size = CHAR_LIMITS.max_input_chars + 1
+        created = await app.create_session(LONG_PROMPT, instructions=INSTRUCTIONS)
+        failed = await app.wait(created["id"])
+        assert failed["status"] == "failed"
+        assert failed["failure"]["code"] == "input_limit_exceeded"
+        assert fake.invocations == []
+
+    asyncio.run(run())
+
+
+def test_capacity_probe_failure_or_timeout_leaves_capacity_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, BOUNDED, 2_000)
+        fake.context_probe_failure = RuntimeError("native detail")
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed"
+        assert settled["context"]["capacity_source"] == "unknown"
+        assert "native detail" not in json.dumps({"s": settled, "e": app.events(created["id"])})
+
+        monkeypatch.setattr(service_module, "CONTEXT_PROBE_TIMEOUT_SECONDS", 0.05)
+        app, fake = bounded_runtime(tmp_path / "hang", BOUNDED, 2_000)
+        fake.context_probe_hangs = True
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed"
+        assert settled["context"]["capacity_source"] == "unknown"
+        assert len(fake.invocations) == 1
+
+    asyncio.run(run())
+
+
+def test_cancel_and_overall_timeout_cover_the_capacity_probe(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, BOUNDED, 2_000)
+        fake.context_probe_hangs = True
+        created = await app.create_session("hello")
+        await asyncio.sleep(0)
+        canceled = await app.cancel(created["id"])
+        assert canceled["status"] == "canceled"
+        assert fake.invocations == []
+        assert app.events(created["id"])[-1]["type"] == "session_canceled"
+
+        app, fake = bounded_runtime(tmp_path / "timeout", Limits(timeout_seconds=1), 2_000)
+        fake.context_probe_hangs = True
+        created = await app.create_session("hello")
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "failed"
+        assert settled["failure"]["code"] == "provider_timeout"
+        assert fake.invocations == []
+
+    asyncio.run(run())
+
+
+def test_streaming_rounds_apply_the_same_window(tmp_path: Path) -> None:
+    async def run() -> None:
+        app, fake = streaming_runtime(tmp_path, BOUNDED)
+        fake.context_tokens = 2_000
+        created = await app.create_session(LONG_PROMPT, instructions=INSTRUCTIONS)
+        await app.wait(created["id"])
+        for _ in range(11):
+            await app.continue_session(created["id"], LONG_PROMPT)
+            settled = await app.wait(created["id"])
+            assert settled["status"] == "completed"
+        record = app.sessions[created["id"]]
+        sent = fake.invocations[-1].messages
+        assert sent[0].role == "system" and len(sent) < len(record.messages)
+        assert settled["final_text"] == "answer"
+        assert [event["type"] for event in app.events(created["id"])[-4:]] == [
+            "provider_started",
+            "context_reduced",
+            "assistant_text_delta",
+            "session_completed",
+        ]
+
+    asyncio.run(run())
+
+
+def test_provider_reported_prompt_size_calibrates_only_well_formed_counts(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, BOUNDED, 2_000)
+        fake.result = CompletionResult("answer", (), "model", usage={"prompt_tokens": 50})
+        created = await app.create_session(LONG_PROMPT, instructions=INSTRUCTIONS)
+        first = await app.wait(created["id"])
+        assert first["context"]["basis"] == "estimate"
+        await app.continue_session(created["id"], LONG_PROMPT)
+        second = await app.wait(created["id"])
+        assert second["context"]["basis"] == "calibrated"
+        # 50 observed for the first prompt plus the assistant reply and new prompt.
+        assert second["context"]["estimated_prompt_tokens"] == 50 + (2 + 8) + (100 + 8)
+        assert fake.invocations[-1].messages == tuple(app.sessions[created["id"]].messages[:-1])
+
+        for usage in ({"prompt_tokens": 0}, {"prompt_tokens": 3.5}, {"prompt_tokens": 1}, {}):
+            app, fake = bounded_runtime(tmp_path / str(len(usage)), BOUNDED, 2_000)
+            fake.result = CompletionResult("answer", (), "model", usage=usage)
+            created = await app.create_session(LONG_PROMPT, instructions=INSTRUCTIONS)
+            await app.wait(created["id"])
+            assert app.sessions[created["id"]].observed_prompt is None
+            await app.continue_session(created["id"], LONG_PROMPT)
+            assert (await app.wait(created["id"]))["context"]["basis"] == "estimate"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ContextWindow(2_000, "unknown"),
+        ContextWindow(2_000, "guessed"),
+        ContextWindow(None, "provider_loaded"),
+        ContextWindow(0, "provider_loaded"),
+        ContextWindow(2_000.0, "provider_loaded"),  # type: ignore[arg-type]
+        {"tokens": 2_000, "source": "provider_loaded"},
+    ],
+    ids=["positive-unknown", "arbitrary-source", "none-loaded", "zero", "float", "not-a-window"],
+)
+def test_inconsistent_capacity_reports_are_normalized_to_unknown(
+    tmp_path: Path, raw: object
+) -> None:
+    async def run() -> None:
+        app, fake = bounded_runtime(tmp_path, BOUNDED, None)
+        fake.context_raw = raw
+        created = await app.create_session(LONG_PROMPT, instructions=INSTRUCTIONS)
+        for _ in range(11):
+            await app.wait(created["id"])
+            await app.continue_session(created["id"], LONG_PROMPT)
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed"
+        assert settled["context"]["capacity_tokens"] is None
+        assert settled["context"]["capacity_source"] == "unknown"
+        assert settled["context"]["reduced"] is False
+        assert len(fake.invocations[-1].messages) == len(app.sessions[created["id"]].messages) - 1
+        assert_schema("SessionResponse", settled)
+
+    asyncio.run(run())
+
+
+def test_output_allocation_is_per_call_and_the_next_roomy_call_regains_it(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        limits = Limits(max_output_tokens=8_192)
+        app, fake = bounded_runtime(tmp_path, limits, 32_768)
+        instructions = "i" * (4_000 - 8) * 3
+        created = await app.create_session("hello", instructions=instructions)
+        first = await app.wait(created["id"])
+        assert first["status"] == "completed"
+        assert fake.invocations[-1].limits.max_output_tokens == 8_192
+        assert first["context"]["allocated_output_tokens"] == 8_192
+        # A turn whose mandatory set exceeds the 22937 budget by 35 tokens.
+        pressure = "p" * ((22_972 - 640 - 4_000 - 8) * 3)
+        await app.continue_session(created["id"], pressure)
+        second = await app.wait(created["id"])
+        assert second["status"] == "completed"
+        sent = fake.invocations[-1]
+        assert sent.limits.max_output_tokens == 8_157
+        assert sent.limits.max_input_chars == limits.max_input_chars
+        assert [message.role for message in sent.messages] == ["system", "user"]
+        assert second["context"]["configured_output_tokens"] == 8_192
+        assert second["context"]["allocated_output_tokens"] == 8_157
+        assert second["context"]["reduced"] is True
+        assert second["limits"] == {**second["limits"], "max_output_tokens": 8_192}
+        assert app.sessions[created["id"]].profile.limits == limits
+        events = app.events(created["id"])
+        reduction = [event for event in events if event["type"] == "context_reduced"][-1]
+        assert reduction["payload"]["configured_output_tokens"] == 8_192
+        assert reduction["payload"]["allocated_output_tokens"] == 8_157
+        assert reduction["payload"]["dropped_messages"] == 2
+        assert "ppp" not in json.dumps(events)
+        # A roomy follow-up regains the configured allowance; the oversized
+        # earlier turn cannot be retained beside it, the short one can.
+        await app.continue_session(created["id"], "short")
+        third = await app.wait(created["id"])
+        assert third["status"] == "completed"
+        assert fake.invocations[-1].limits.max_output_tokens == 8_192
+        assert third["context"]["allocated_output_tokens"] == 8_192
+        assert third["context"]["reduced"] is True
+        assert [message.content[:5] for message in fake.invocations[-1].messages] == [
+            "iiiii",
+            "short",
+        ]
+        await app.continue_session(created["id"], "again")
+        fourth = await app.wait(created["id"])
+        assert fourth["context"]["allocated_output_tokens"] == 8_192
+        assert [message.content[:5] for message in fake.invocations[-1].messages] == [
+            "iiiii",
+            "short",
+            "answe",
+            "again",
+        ]
+        assert_schema("SessionResponse", third)
+        assert_schema("EventsResponse", {"events": events})
+
+    asyncio.run(run())
+
+
+def test_output_allocation_reaches_the_wire_and_tool_groups_are_not_re_executed(
+    tmp_path: Path,
+) -> None:
+    bodies: list[dict[str, Any]] = []
+    replies: list[dict[str, Any]] = [
+        {
+            "model": "model",
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {"name": "lookup", "arguments": '{"id": 1}'},
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+        {
+            "model": "model",
+            "choices": [{"finish_reason": "stop", "message": {"content": '{"ok": true}'}}],
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "type": "llm",
+                            "key": "model",
+                            "loaded_instances": [
+                                {"id": "model", "config": {"context_length": 32_768}}
+                            ],
+                        }
+                    ]
+                },
+            )
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=replies[len(bodies) - 1])
+
+    async def run() -> None:
+        connection = ProviderConnection(
+            "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        )
+        limits = Limits(max_output_tokens=8_192)
+        profile = ModelProfile("reason", "local", "model", False, True, limits)
+        config = RuntimeConfiguration(
+            {"local": connection}, {"reason": profile}, "reason", {"answer": "reason"}
+        )
+        app = RuntimeService(
+            config,
+            SelectionStore(tmp_path / "state"),
+            provider_factory=lambda found_connection, found_profile: LMStudioAdapter(
+                found_connection,
+                found_profile,
+                lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            ),
+        )
+        # Structured output disables streaming here so the JSON replies apply.
+        pressure = "p" * ((23_500 - 640 - 8) * 3)
+        created = await app.create_session(pressure, [TOOL], output_schema={"type": "object"})
+        waiting = await app.wait(created["id"])
+        assert waiting["status"] == "waiting_for_tool"
+        assert (
+            bodies[0]["max_tokens"]
+            == 32_768 - 1_639 - waiting["context"]["estimated_prompt_tokens"]
+        )
+        assert bodies[0]["max_tokens"] < 8_192
+        await app.submit_tool_results(
+            created["id"], [ToolResult("call-1", "lookup", {"value": "v" * 3_000})]
+        )
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "completed", settled["failure"]
+        assert settled["final_text"] == '{"ok": true}'
+        # The second call carries the complete tool group once and a smaller
+        # allocation because the tool result joined the mandatory set.
+        assert [item["role"] for item in bodies[1]["messages"]] == ["user", "assistant", "tool"]
+        assert (
+            bodies[1]["max_tokens"]
+            == 32_768 - 1_639 - settled["context"]["estimated_prompt_tokens"]
+        )
+        assert bodies[1]["max_tokens"] < bodies[0]["max_tokens"]
+        assert len(bodies) == 2
+        assert sum(event["type"] == "tool_requests" for event in app.events(created["id"])) == 1
+        assert settled["limits"]["max_output_tokens"] == 8_192
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["complete", "streamed"])
+@pytest.mark.parametrize("with_tool_call", [False, True], ids=["text", "partial-tool-call"])
+def test_provider_length_termination_never_completes_or_executes_tools(
+    tmp_path: Path, streaming: bool, with_tool_call: bool
+) -> None:
+    tool_call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "lookup", "arguments": '{"id": 1'},
+    }
+    if streaming:
+        frames = [
+            {"model": "model", "choices": [{"index": 0, "delta": {"content": "partial "}}]},
+            {
+                "model": "model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"tool_calls": [{"index": 0, **tool_call}]}
+                        if with_tool_call
+                        else {"content": "answer"},
+                        "finish_reason": "length",
+                    }
+                ],
+            },
+        ]
+        content = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames) + "data: [DONE]\n\n"
+        response = httpx.Response(
+            200, headers={"Content-Type": "text/event-stream"}, content=content.encode()
+        )
+    else:
+        message: dict[str, object] = {"content": "partial answer"}
+        if with_tool_call:
+            message["tool_calls"] = [tool_call]
+        response = httpx.Response(
+            200,
+            json={"model": "model", "choices": [{"finish_reason": "length", "message": message}]},
+        )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/models":
+            return httpx.Response(404, json={})
+        return response
+
+    async def run() -> None:
+        connection = ProviderConnection(
+            "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        )
+        profile = ModelProfile("reason", "local", "model", False, True)
+        config = RuntimeConfiguration(
+            {"local": connection}, {"reason": profile}, "reason", {"answer": "reason"}
+        )
+        app = RuntimeService(
+            config,
+            SelectionStore(tmp_path / "state"),
+            provider_factory=lambda found_connection, found_profile: LMStudioAdapter(
+                found_connection,
+                found_profile,
+                lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            ),
+        )
+        created = await app.create_session(
+            "hello", [TOOL], output_schema=None if streaming else {"type": "object"}
+        )
+        settled = await app.wait(created["id"])
+        assert settled["status"] == "failed"
+        assert settled["failure"]["code"] == "provider_incomplete"
+        assert settled["final_text"] is None
+        assert settled["pending_tools"] == []
+        events = app.events(created["id"])
+        assert not any(event["type"] == "tool_requests" for event in events)
+        assert events[-1]["type"] == "session_failed"
+        record = app.sessions[created["id"]]
+        assert [message.role for message in record.messages] == ["user"]
+        if streaming:
+            # Provisional deltas may exist; they are never promoted to a result.
+            assert [event["type"] for event in events[:3]] == [
+                "session_created",
+                "provider_started",
+                "assistant_text_delta",
+            ]
 
     asyncio.run(run())

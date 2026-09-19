@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import uuid
 from collections.abc import Mapping, Sequence
@@ -15,7 +16,18 @@ from typing import Any
 
 from jsonschema import ValidationError, validate
 
+from local_agent_runtime.context import (
+    CAPACITY_SOURCE_PROVIDER_LOADED,
+    ContextPlan,
+    ObservedPrompt,
+    PromptMeasure,
+    checked_plan,
+    estimate_prompt_chars,
+    plan_context,
+    unplanned_context,
+)
 from local_agent_runtime.contracts import (
+    ContextWindow,
     HealthStatus,
     Invocation,
     Message,
@@ -42,7 +54,7 @@ from local_agent_runtime.ports import (
     ProviderFactory,
     SelectionPort,
 )
-from local_agent_runtime.validation import checked_schema, json_text, validate_output
+from local_agent_runtime.validation import checked_schema, validate_output
 
 TOOL_NAME = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.:-]{0,127}$")
 TOOL_REQUEST_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$")
@@ -50,6 +62,7 @@ MAX_TOOLS = 128
 MAX_EVENTS = 512
 MAX_TOOL_RESULT_CHARS = 100_000
 PROBE_TIMEOUT_SECONDS: float = 20
+CONTEXT_PROBE_TIMEOUT_SECONDS: float = 5
 STREAM_EVENT_CHARS = 128
 STREAM_EVENT_BUDGET = 256
 TERMINAL_EVENT_TYPES = frozenset({"session_completed", "session_failed", "session_canceled"})
@@ -83,6 +96,8 @@ class SessionRecord:
     effective_reasoning_effort: ReasoningEffort | None = None
     usage: dict[str, int | float] = field(default_factory=dict)
     validation: str = "pending"
+    context: ContextPlan | None = None
+    observed_prompt: ObservedPrompt | None = None
     task: asyncio.Task[None] | None = None
 
     def add_event(self, event_type: str, payload: Mapping[str, Any] | None = None) -> None:
@@ -126,6 +141,9 @@ class SessionRecord:
             ),
             "usage": dict(self.usage),
             "limits": asdict(self.profile.limits),
+            "context": (
+                self.context.public_dict() if self.context is not None else unplanned_context()
+            ),
             "validation": self.validation,
             "event_count": len(self.events),
         }
@@ -786,7 +804,15 @@ class RuntimeService:
             ),
         )
         record.add_event("session_created", {"profile_id": profile.id, "task_code": task_code})
-        self._ensure_schedulable(record, record.messages)
+        # The opening turn is incoming input in full (instructions plus prompt) and there is
+        # nothing earlier to prune, so it must fit the input ceiling as a whole, measured the
+        # way every later call's window is.
+        if (
+            estimate_prompt_chars(record.messages, record.tools, record.output_schema)
+            > profile.limits.max_input_chars
+        ):
+            raise RuntimeFailure("input_limit_exceeded", "The input exceeds its limit")
+        self._ensure_schedulable(record)
         self.sessions[record.id] = record
         self._schedule(record)
         return record.public_dict()
@@ -814,14 +840,14 @@ class RuntimeService:
         return [event.public_dict() for event in record.events if event.sequence > after]
 
     def _schedule(self, record: SessionRecord) -> None:
-        self._ensure_schedulable(record, record.messages)
+        self._ensure_schedulable(record)
         record.status = SessionStatus.RUNNING
         record.finished_at = None
         record.provider_calls += 1
         record.add_event("provider_started")
         record.task = asyncio.create_task(self._advance(record))
 
-    def _ensure_schedulable(self, record: SessionRecord, messages: Sequence[Message]) -> None:
+    def _ensure_schedulable(self, record: SessionRecord) -> None:
         if record.task is not None and not record.task.done():
             raise conflict("The session is already running")
         if len(record.events) >= MAX_EVENTS - 8:
@@ -831,16 +857,109 @@ class RuntimeService:
             raise RuntimeFailure(
                 "capacity_exceeded", "Provider concurrency limit reached", status_code=429
             )
-        json_text([item.public_dict() for item in messages], record.profile.limits.max_input_chars)
+        # The retained transcript is not itself bounded by the input ceiling: each incoming
+        # input is checked where it arrives, the event limit bounds how many turns a session
+        # can retain, and the per-call context plan prunes whole earlier turns so a long valid
+        # conversation keeps going. What the provider is finally asked to accept is still
+        # bounded fail-closed by the adapter's serialized-body limit after planning.
+
+    @staticmethod
+    async def _context_window(adapter: Any) -> ContextWindow:
+        """Read provider capacity evidence; anything short of a positive report is unknown."""
+        probe = getattr(adapter, "context_window", None)
+        if not callable(probe):
+            return ContextWindow()
+        try:
+            async with asyncio.timeout(CONTEXT_PROBE_TIMEOUT_SECONDS):
+                window = await probe()
+        except Exception:
+            return ContextWindow()
+        # Only a positive loaded count from the provider is capacity; anything
+        # else, including an inconsistent source label, is reported as unknown.
+        if (
+            not isinstance(window, ContextWindow)
+            or type(window.tokens) is not int
+            or window.tokens <= 0
+            or window.source != CAPACITY_SOURCE_PROVIDER_LOADED
+        ):
+            return ContextWindow()
+        return window
+
+    @staticmethod
+    def _prompt_measure(record: SessionRecord, adapter: Any) -> PromptMeasure | None:
+        """The adapter's exact request size for a candidate window, when it offers one."""
+        sizing = getattr(adapter, "prompt_chars", None)
+        if not callable(sizing):
+            return None
+
+        def measure(messages: Sequence[Message]) -> int:
+            invocation = Invocation(
+                tuple(messages),
+                record.tools,
+                record.profile.limits,
+                record.output_schema,
+                record.requested_reasoning_effort,
+            )
+            size = sizing(invocation)
+            if type(size) is not int or size < 0:
+                raise RuntimeFailure(
+                    "invalid_provider_contract",
+                    "The provider reported an invalid prompt size",
+                    status_code=502,
+                )
+            return size
+
+        return measure
+
+    @staticmethod
+    def _plan_context(
+        record: SessionRecord, window: ContextWindow, measure: PromptMeasure | None = None
+    ) -> ContextPlan:
+        """Bound this call's prompt; the retained transcript itself never changes."""
+        plan = plan_context(
+            record.messages,
+            record.tools,
+            record.output_schema,
+            record.profile.limits,
+            window,
+            record.observed_prompt,
+            measure,
+        )
+        record.context = plan
+        checked_plan(plan)
+        if plan.reduced or plan.output_reduced:
+            record.add_event(
+                "context_reduced",
+                {
+                    "round": record.provider_calls,
+                    "dropped_messages": plan.dropped_messages,
+                    "dropped_turns": plan.dropped_turns,
+                    "retained_messages": len(plan.indices),
+                    "estimated_prompt_tokens": plan.estimated_prompt_tokens,
+                    "capacity_tokens": plan.capacity_tokens,
+                    "budget_tokens": plan.budget_tokens,
+                    "basis": plan.basis,
+                    "configured_output_tokens": plan.configured_output_tokens,
+                    "allocated_output_tokens": plan.allocated_output_tokens,
+                },
+            )
+        return plan
 
     async def _advance(self, record: SessionRecord) -> None:
         adapter = self.provider_factory(record.connection, record.profile)
         try:
             async with asyncio.timeout(record.profile.limits.timeout_seconds):
+                plan = self._plan_context(
+                    record,
+                    await self._context_window(adapter),
+                    self._prompt_measure(record, adapter),
+                )
+                # A per-call copy: the profile's configured limits are never mutated
+                # and the next call recomputes its allocation from them.
                 invocation = Invocation(
-                    tuple(record.messages),
+                    plan.messages,
                     record.tools,
-                    record.profile.limits,
+                    replace(record.profile.limits, max_output_tokens=plan.allocated_output_tokens),
                     record.output_schema,
                     record.requested_reasoning_effort,
                 )
@@ -870,6 +989,17 @@ class RuntimeService:
             record.effective_reasoning_effort = result.effective_reasoning_effort
             for name, count in result.usage.items():
                 record.usage[name] = record.usage.get(name, 0) + count
+            prompt_tokens = result.usage.get("prompt_tokens", result.usage.get("input_tokens"))
+            if (
+                isinstance(prompt_tokens, int | float)
+                and math.isfinite(prompt_tokens)
+                and prompt_tokens == int(prompt_tokens)
+                and len(plan.messages) <= prompt_tokens <= 999_999_999
+            ):
+                # The provider's own count for exactly this prompt calibrates the
+                # next estimate; a missing, zero or implausible count leaves the
+                # heuristic in charge.
+                record.observed_prompt = ObservedPrompt(frozenset(plan.indices), int(prompt_tokens))
             output_size = len(result.text) + len(
                 json.dumps([item.public_dict() for item in result.tool_requests], allow_nan=False)
             )
@@ -999,7 +1129,7 @@ class RuntimeService:
             messages.append(
                 Message("tool", serialized, tool_request_id=request_id, tool_name=request.name)
             )
-        self._ensure_schedulable(record, [*record.messages, *messages])
+        self._ensure_schedulable(record)
         record.messages.extend(messages)
         record.pending_tools = {}
         record.tool_rounds += 1
@@ -1015,6 +1145,8 @@ class RuntimeService:
             raise conflict("Only a completed session can receive follow-up input")
         if not isinstance(prompt, str) or not prompt.strip():
             raise invalid_request("The follow-up prompt is invalid")
+        if len(prompt) > record.profile.limits.max_input_chars:
+            raise invalid_request("The session input exceeds its limit")
         # Each turn snapshots its own effort; a running turn is never re-targeted.
         # No override continues the conversation at the effort already in use, so a
         # follow-up never silently drops back to the profile default.
@@ -1023,7 +1155,7 @@ class RuntimeService:
             if reasoning_effort is None
             else self._reasoning_effort(record.profile, record.connection, reasoning_effort)
         )
-        self._ensure_schedulable(record, [*record.messages, Message("user", prompt)])
+        self._ensure_schedulable(record)
         record.final_text = None
         record.failure = None
         record.effective_model = None

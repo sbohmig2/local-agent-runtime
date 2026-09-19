@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from local_agent_runtime.contracts import (
     Capabilities,
     CompletionResult,
+    ContextWindow,
     Invocation,
     ModelDiscovery,
     ModelProfile,
@@ -45,6 +46,22 @@ class StreamingProviderPort(ProviderPort, Protocol):
     async def complete_streaming(
         self, invocation: Invocation, emit_text: TextDeltaSink
     ) -> CompletionResult: ...
+
+
+class ContextWindowProviderPort(ProviderPort, Protocol):
+    """Optional additive port for providers that can report the loaded model's context."""
+
+    async def context_window(self) -> ContextWindow: ...
+
+
+class PromptSizingProviderPort(ProviderPort, Protocol):
+    """Optional additive port: the exact character size this adapter checks before sending.
+
+    Planning measures candidate windows with it so a window that plans as fitting is
+    the same window the adapter accepts; the adapter's own check is never removed.
+    """
+
+    def prompt_chars(self, invocation: Invocation) -> int: ...
 
 
 ProviderFactory = Callable[[ProviderConnection, ModelProfile], ProviderPort]

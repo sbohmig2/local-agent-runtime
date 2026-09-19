@@ -81,6 +81,126 @@ false for CLI routes that do not expose an equivalent verified control.
 Character/output-byte and time bounds apply to every route. A CLI profile's
 token preference must not be presented as an enforced token budget.
 
+## Context capacity and bounded history
+
+The application retains a session's whole transcript and bounds only what one
+provider call sends. Two limits bound that call's window at once and must not
+be confused:
+
+- The profile's `max_input_chars` is a character ceiling on what the runtime
+  accepts and on what an adapter serializes. It applies to incoming input where
+  it arrives (the opening turn as a whole, instructions plus prompt, measured
+  as a request, and each follow-up prompt; a tool result has its own fixed
+  limit and then joins the current turn that the next window must fit) and to
+  the serialized request of every provider call. It does not bound the
+  retained transcript itself: the session event limit bounds how many turns a
+  session retains, and a valid conversation may outgrow the ceiling while each
+  call is planned to fit it. Output characters
+  and tool rounds remain session totals and fail with their existing codes;
+  pruning a call's window never lifts them.
+- Model-context budgeting bounds the same window to the loaded model's token
+  capacity, which is provider evidence rather than configuration.
+
+Planning measures every candidate window as the adapter would send it. Each
+shipped adapter implements the optional additive `PromptSizingProviderPort`
+(`prompt_chars`): LM Studio reports the larger of its streaming and
+non-streaming chat bodies, OpenRouter its chat body and the CLI adapters their
+bounded prompt, each exactly what that adapter's own send-time check bounds. An
+adapter without the port is sized by a generic estimate that takes the larger
+of the two shipped wire shapes plus a framing allowance. An adapter reporting a
+non-integer or negative size fails the call as `invalid_provider_contract`.
+The adapters' own serialized-body refusal (`input_limit_exceeded`) is unchanged
+and remains the final fail-closed check after planning.
+
+Capacity comes from the optional additive `context_window()` port. LM Studio
+implements it from the native `/api/v1/models` catalog: the configured identity
+must resolve to exactly one native model, by its key or by a loaded instance
+identifier, and the reported value is that model's loaded
+`config.context_length`. Several loaded instances yield the smallest length
+because the serving instance is not observable. A downloaded-but-unloaded
+model, a malformed entry, an ambiguous identity, or an older server without the
+native route reports unknown capacity; `max_context_length` is never substituted
+because it describes what the model could be loaded with, not what is loaded.
+The read is a bounded five-second loopback GET inside the session's own timeout
+and cancellation scope. Other adapters do not implement the port and keep their
+existing behavior. The inferred cause of the original failure is that the
+server's own overflow handling discards leading messages before rendering the
+chat template, which then rejects the remaining role sequence; that step was not
+observed directly.
+
+With known capacity the budget is the loaded context minus the profile's
+`max_output_tokens` and a margin of five percent (at least 128 tokens). The
+window always contains the instructions and the entire current turn: the latest
+user message and every assistant tool request and tool result since it. Earlier
+turns are then kept newest-first while they fit both the token budget and the
+character ceiling, as whole turns only, so a tool-call group is never split and
+no executed tool is ever replayed. Nothing is summarized; dropped turns simply
+leave the prompt while the record keeps them. Unknown capacity claims nothing
+about the model: no token budget applies and the session reports
+`capacity_source: unknown` with `capacity_tokens: null`. The character ceiling
+still applies on its own, keeping the largest suffix of whole turns that fits
+it, so an unknown-capacity call can be reduced; its `context_reduced` event
+then carries `null` for `capacity_tokens` and `budget_tokens` and the
+configured output allowance unchanged.
+
+The profile's `max_output_tokens` is a configured maximum, never a value the
+runtime rewrites. Whenever the mandatory window fits beside it, the call uses
+it and retains as much history as fits. When it does not fit and the loaded
+context is small (below 128,000 tokens, a decimal count), the runtime allocates a smaller output
+for that one call instead of failing: it takes the smallest-sized window that
+still carries the mandatory set and fits the character ceiling (a calibrated
+superset may be smaller than the heuristic mandatory subset), keeps the margin,
+and gives the remaining context to output, capped at the configured value.
+Optional earlier turns are not retained at the expense of output space. The
+allocation must reach the useful floor, `min(max_output_tokens, 2048)`; below
+it, or on a context of 128,000 tokens or more whose configured allowance cannot
+fit, the session fails with `context_window_exceeded` and a fixed message
+before any provider request (a distinct message names a loaded context smaller
+than the configured reserve). A mandatory window that exceeds the character
+ceiling fails instead with `input_limit_exceeded` and its own fixed message,
+again before any provider request and whether or not capacity is known; no
+output reallocation can help there. Both refusals leave the transcript retained
+and report the configured allowance unchanged.
+The provider receives a per-call copy of the limits; the profile, the session's
+public `limits` and the next call's starting point are unchanged, so a roomy
+follow-up regains the full configured allowance. The allocation is what the
+call was planned and sent with, not what the model consumed; consumption is
+the provider's reported `completion_tokens` in `usage`. A plan that fails
+sends nothing and reports the configured allowance unchanged.
+
+A provider that stops at its output limit reports `length` rather than `stop`;
+the shared chat codec turns that into `provider_incomplete` before returning a
+completed answer or exposing any tool request. Provisional streamed text may
+already be visible, but remains attached to the failed turn, not a completed
+answer. A smaller allocation can therefore produce an explicit failure, never
+a truncated answer presented as complete or
+a partial tool execution.
+
+No installed route exposes a tokenizer, so sizes are estimates and are
+published as such. The heuristic charges three ASCII characters per token, one
+token per Latin, Greek or Cyrillic character and three per other character
+(CJK, symbols, emoji), plus per-message, per-tool, tool-argument, tool-result,
+output-schema and chat-template overhead. A loopback measurement of a
+Mistral-family tokenizer produced about five characters per token for prose and
+four for JSON, so the heuristic prunes earlier than strictly necessary rather
+than later. After a provider call reports `prompt_tokens`, the next plan sizes
+any superset of that exact message set from the reported count plus the
+heuristic for messages added since (`basis: calibrated`); a missing, zero,
+fractional or implausible count leaves the heuristic in charge. Candidate
+windows are evaluated from the whole transcript downwards so a calibrated
+superset that fits is chosen before a heuristic-only subset could refuse.
+Both heuristic and calibrated sizes are estimates, never upper bounds: the
+measured conservatism for prose and JSON does not guarantee that arbitrary
+ASCII text or another tokenizer fits, and a provider may still report an
+overflow that the runtime then classifies as it does today.
+
+The public session carries a `context` object with the capacity, its source,
+the estimated prompt size, the basis, the reduction counts and the configured
+and allocated output tokens of the most recent provider call. Dropping messages
+or allocating less output than configured emits a `context_reduced` event with
+counts only; which content left the prompt is never disclosed, and neither
+prompts nor tool results enter diagnostics.
+
 ## Reasoning effort
 
 Each adapter owns two sets. `TRANSPORT_EFFORTS` is what the route can encode at

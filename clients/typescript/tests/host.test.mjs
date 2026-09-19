@@ -45,7 +45,7 @@ class FakeRuntime {
   modelOptionCalls = 0;
 
   async health() {
-    return { status: "available", package_version: "0.5.3", api_version: "1.4.0" };
+    return { status: "available", package_version: "0.5.3", api_version: "1.5.0" };
   }
 
   async profiles(includeHealth = false, signal = undefined, includeDiscovery = false) {
@@ -299,6 +299,112 @@ class DeltaRuntime extends FakeRuntime {
   }
 }
 
+class ContextRuntime extends FakeRuntime {
+  async *streamEvents() {
+    if (this.phase !== "idle") return;
+    yield this.event(1, "session_created", {});
+    yield this.event(2, "provider_started", {});
+    yield this.event(3, "context_reduced", {
+      round: 1, dropped_messages: 6, dropped_turns: 3, retained_messages: 11,
+      estimated_prompt_tokens: 1738, capacity_tokens: 2000, budget_tokens: 1772, basis: "estimate",
+      configured_output_tokens: 100, allocated_output_tokens: 100
+    });
+    yield this.event(4, "session_completed", { text: "One record found." });
+    this.phase = "completed";
+  }
+
+  state(status) {
+    return {
+      ...super.state(status),
+      context: {
+        capacity_tokens: 2000, capacity_source: "provider_loaded", estimated_prompt_tokens: 1738,
+        basis: "estimate", reduced: true, dropped_messages: 6,
+        configured_output_tokens: 100, allocated_output_tokens: 100
+      }
+    };
+  }
+}
+
+class OutputAllocationRuntime extends ContextRuntime {
+  async *streamEvents() {
+    if (this.phase !== "idle") return;
+    yield this.event(1, "session_created", {});
+    yield this.event(2, "provider_started", {});
+    yield this.event(3, "context_reduced", {
+      round: 1, dropped_messages: 0, dropped_turns: 0, retained_messages: 2,
+      estimated_prompt_tokens: 22972, capacity_tokens: 32768, budget_tokens: 22972, basis: "estimate",
+      configured_output_tokens: 8192, allocated_output_tokens: 8157
+    });
+    yield this.event(4, "session_completed", { text: "One record found." });
+    this.phase = "completed";
+  }
+
+  state(status) {
+    return {
+      ...super.state(status),
+      context: {
+        capacity_tokens: 32768, capacity_source: "provider_loaded", estimated_prompt_tokens: 22972,
+        basis: "estimate", reduced: false, dropped_messages: 0,
+        configured_output_tokens: 8192, allocated_output_tokens: 8157
+      }
+    };
+  }
+}
+
+class MalformedContextRuntime extends ContextRuntime {
+  async *streamEvents() {
+    if (this.phase !== "idle") return;
+    yield this.event(1, "session_created", {});
+    yield this.event(2, "context_reduced", { round: 1, dropped_messages: "six" });
+    yield this.event(3, "session_completed", { text: "One record found." });
+    this.phase = "completed";
+  }
+}
+
+// Exactly what the Python runtime emits when the profile's character ceiling
+// prunes without any capacity evidence: capacity and budget are null, not numbers.
+class UnknownCapacityContextRuntime extends ContextRuntime {
+  async *streamEvents() {
+    if (this.phase !== "idle") return;
+    yield this.event(1, "session_created", {});
+    yield this.event(2, "provider_started", {});
+    yield this.event(3, "context_reduced", {
+      round: 13, dropped_messages: 18, dropped_turns: 9, retained_messages: 9,
+      estimated_prompt_tokens: 1452, capacity_tokens: null, budget_tokens: null, basis: "estimate",
+      configured_output_tokens: 100, allocated_output_tokens: 100
+    });
+    yield this.event(4, "session_completed", { text: "One record found." });
+    this.phase = "completed";
+  }
+
+  state(status) {
+    return {
+      ...super.state(status),
+      context: {
+        capacity_tokens: null, capacity_source: "unknown", estimated_prompt_tokens: 1452,
+        basis: "estimate", reduced: true, dropped_messages: 18,
+        configured_output_tokens: 100, allocated_output_tokens: 100
+      }
+    };
+  }
+}
+
+// Null is accepted for the two capacity counts only; every other count stays strict.
+class NullCountContextRuntime extends ContextRuntime {
+  async *streamEvents() {
+    if (this.phase !== "idle") return;
+    yield this.event(1, "session_created", {});
+    yield this.event(2, "provider_started", {});
+    yield this.event(3, "context_reduced", {
+      round: 1, dropped_messages: 6, dropped_turns: 3, retained_messages: 11,
+      estimated_prompt_tokens: null, capacity_tokens: null, budget_tokens: null, basis: "estimate",
+      configured_output_tokens: 100, allocated_output_tokens: 100
+    });
+    yield this.event(4, "session_completed", { text: "One record found." });
+    this.phase = "completed";
+  }
+}
+
 function authorizePrivate(request, profile) {
   if (request.privateProcessing !== true || !profile.privateProcessingEligible) {
     return "deny";
@@ -374,6 +480,79 @@ test("assistant text deltas retain runtime order and payload through the host", 
       { round: 1, delta: "record found." }
     ]
   );
+});
+
+test("context reductions reach the host as counts and sessions carry their context", async () => {
+  const host = coordinator(new ContextRuntime());
+  const started = await host.start({ prompt: "List records.", privateProcessing: true });
+  const completed = await host.waitForSettled(started.id);
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(completed.context, {
+    capacityTokens: 2000, capacitySource: "provider_loaded", estimatedPromptTokens: 1738,
+    basis: "estimate", reduced: true, droppedMessages: 6,
+    configuredOutputTokens: 100, allocatedOutputTokens: 100
+  });
+  assert.deepEqual(
+    host.events(started.id).filter((event) => event.type === "context_reduced").map((event) => event.detail),
+    [{ round: 1, droppedMessages: 6, droppedTurns: 3, retainedMessages: 11,
+      estimatedPromptTokens: 1738, capacityTokens: 2000, budgetTokens: 1772,
+      configuredOutputTokens: 100, allocatedOutputTokens: 100, basis: "estimate" }]
+  );
+  // An output-only allocation (no dropped messages) is a valid reduction event.
+  const allocating = coordinator(new OutputAllocationRuntime());
+  const allocatingStarted = await allocating.start({ prompt: "List records.", privateProcessing: true });
+  const allocated = await allocating.waitForSettled(allocatingStarted.id);
+  assert.equal(allocated.status, "completed");
+  assert.equal(allocated.context.allocatedOutputTokens, 8157);
+  assert.equal(allocated.context.configuredOutputTokens, 8192);
+  assert.deepEqual(
+    allocating.events(allocatingStarted.id).filter((event) => event.type === "context_reduced").map((event) => event.detail),
+    [{ round: 1, droppedMessages: 0, droppedTurns: 0, retainedMessages: 2, estimatedPromptTokens: 22972,
+      capacityTokens: 32768, budgetTokens: 22972, configuredOutputTokens: 8192, allocatedOutputTokens: 8157,
+      basis: "estimate" }]
+  );
+  // A runtime that predates the field leaves the session without one.
+  const legacy = coordinator(new DeltaRuntime());
+  const legacyStarted = await legacy.start({ prompt: "List records.", privateProcessing: true });
+  assert.equal(Object.hasOwn(await legacy.waitForSettled(legacyStarted.id), "context"), false);
+  const malformed = coordinator(new MalformedContextRuntime());
+  const malformedStarted = await malformed.start({ prompt: "List records.", privateProcessing: true });
+  const failed = await malformed.waitForSettled(malformedStarted.id);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.failureCode, "invalid_runtime_event");
+});
+
+test("an unknown-capacity reduction keeps its null capacity counts and completes", async () => {
+  const host = coordinator(new UnknownCapacityContextRuntime());
+  const started = await host.start({ prompt: "List records.", privateProcessing: true });
+  const completed = await host.waitForSettled(started.id);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.failureCode, null);
+  assert.deepEqual(completed.context, {
+    capacityTokens: null, capacitySource: "unknown", estimatedPromptTokens: 1452,
+    basis: "estimate", reduced: true, droppedMessages: 18,
+    configuredOutputTokens: 100, allocatedOutputTokens: 100
+  });
+  const reductions = host.events(started.id).filter((event) => event.type === "context_reduced");
+  assert.deepEqual(
+    reductions.map((event) => event.detail),
+    [{ round: 13, droppedMessages: 18, droppedTurns: 9, retainedMessages: 9,
+      estimatedPromptTokens: 1452, capacityTokens: null, budgetTokens: null,
+      configuredOutputTokens: 100, allocatedOutputTokens: 100, basis: "estimate" }]
+  );
+  // The null counts are preserved as reported, never dropped or coerced to a number.
+  assert.equal(Object.hasOwn(reductions[0].detail, "capacityTokens"), true);
+  assert.equal(Object.hasOwn(reductions[0].detail, "budgetTokens"), true);
+  assert.equal(reductions[0].detail.capacityTokens, null);
+  assert.equal(reductions[0].detail.budgetTokens, null);
+
+  // A null anywhere else in the event is still a malformed runtime event.
+  const strict = coordinator(new NullCountContextRuntime());
+  const strictStarted = await strict.start({ prompt: "List records.", privateProcessing: true });
+  const rejected = await strict.waitForSettled(strictStarted.id);
+  assert.equal(rejected.status, "failed");
+  assert.equal(rejected.failureCode, "invalid_runtime_event");
+  assert.equal(strict.events(strictStarted.id).some((event) => event.type === "context_reduced"), false);
 });
 
 test("injected processing and tool policy fail closed", async () => {
@@ -750,7 +929,7 @@ test("HTTP adapter rejects non-literal-loopback binds at runtime", () => {
 test("SSE connects while idle and host shutdown closes the stream", async () => {
   const agent = {
     async health() {
-      return { status: "available", runtimeVersion: "0.5.3", apiVersion: "1.4.0" };
+      return { status: "available", runtimeVersion: "0.5.3", apiVersion: "1.5.0" };
     },
     async profiles() {
       return { selectedProfile: "local", profiles: [] };

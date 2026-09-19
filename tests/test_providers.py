@@ -11,8 +11,10 @@ from typing import Any, cast
 import httpx
 import pytest
 
-from local_agent_runtime.adapters.chat_codec import chat_body
+from local_agent_runtime.adapters.chat_codec import chat_body, chat_prompt_chars
 from local_agent_runtime.adapters.cli_base import CLIAdapterBase
+from local_agent_runtime.adapters.cli_codec import _bounded_prompt as cli_bounded_prompt
+from local_agent_runtime.adapters.cli_codec import cli_prompt_chars
 from local_agent_runtime.adapters.process import ProcessResult, ProcessRunner, run_process
 from local_agent_runtime.adapters.providers.claude import ClaudeAdapter
 from local_agent_runtime.adapters.providers.codex import CodexAdapter
@@ -23,9 +25,11 @@ from local_agent_runtime.adapters.providers.lmstudio import (
     _is_structured_context_window_error,
 )
 from local_agent_runtime.adapters.providers.openrouter import OpenRouterAdapter
+from local_agent_runtime.context import estimate_prompt_chars
 from local_agent_runtime.contracts import (
     Capabilities,
     CompletionResult,
+    ContextWindow,
     HealthStatus,
     Invocation,
     Limits,
@@ -36,6 +40,7 @@ from local_agent_runtime.contracts import (
     ProviderConnection,
     ReasoningEffort,
     ToolDefinition,
+    ToolRequest,
 )
 from local_agent_runtime.errors import RuntimeFailure
 
@@ -1935,3 +1940,222 @@ def test_an_unresolvable_or_unexecutable_target_stays_unavailable(
         with pytest.raises(RuntimeFailure) as failure:
             asyncio.run(adapter.complete(Invocation((Message("user", "p"),), (), Limits())))
         assert failure.value.code == "provider_unavailable"
+
+
+def lm_studio_capacity_adapter(
+    native: object, *, model: str = "local-model", native_status: int = 200
+) -> LMStudioAdapter:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/models":
+            return httpx.Response(native_status, json=native)
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "local-model"}]})
+        return httpx.Response(500, json={})
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    connection = ProviderConnection(
+        "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+    )
+    return LMStudioAdapter(connection, ModelProfile("p", "local", model, False, False), factory)
+
+
+def native_model(
+    key: str, *instances: tuple[str, object], max_length: int = 262_144
+) -> dict[str, Any]:
+    return {
+        "type": "llm",
+        "key": key,
+        "max_context_length": max_length,
+        "loaded_instances": [
+            {"id": identity, "config": {"context_length": length}} for identity, length in instances
+        ],
+    }
+
+
+def test_lm_studio_reports_the_loaded_context_of_exactly_the_configured_model() -> None:
+    by_key = lm_studio_capacity_adapter(
+        {
+            "models": [
+                native_model("other", ("other", 4_096)),
+                native_model("local-model", ("local-model", 32_768)),
+            ]
+        }
+    )
+    assert asyncio.run(by_key.context_window()) == ContextWindow(32_768, "provider_loaded")
+    by_instance = lm_studio_capacity_adapter(
+        {"models": [native_model("some-key", ("local-model", 8_192))]}
+    )
+    assert asyncio.run(by_instance.context_window()) == ContextWindow(8_192, "provider_loaded")
+    several = lm_studio_capacity_adapter(
+        {
+            "models": [
+                native_model("local-model", ("local-model", 32_768), ("local-model:2", 16_384))
+            ]
+        }
+    )
+    # The serving instance is not observable, so the smaller loaded length is reported.
+    assert asyncio.run(several.context_window()) == ContextWindow(16_384, "provider_loaded")
+
+
+@pytest.mark.parametrize(
+    "native",
+    [
+        {
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "local-model",
+                    "max_context_length": 262_144,
+                    "loaded_instances": [],
+                }
+            ]
+        },
+        {"models": [native_model("local-model", ("local-model", "32768"))]},
+        {"models": [native_model("local-model", ("local-model", 0))]},
+        {"models": [native_model("local-model", ("local-model", 1_000_000_000))]},
+        {
+            "models": [
+                {"type": "llm", "key": "local-model", "loaded_instances": [{"id": "local-model"}]}
+            ]
+        },
+        {"models": [native_model("local-model", ("local-model", 32_768)), "garbage"]},
+        {
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "local-model",
+                    "loaded_instances": [
+                        {"id": "local-model", "config": {"context_length": 32_768}},
+                        "garbage",
+                    ],
+                }
+            ]
+        },
+        {"models": [native_model("local-model", ("local-model", 32_768), ("local-model:2", None))]},
+        {"models": [native_model("other-key", ("local-model", 32_768), ("other-key:2", "8192"))]},
+        {
+            "models": [
+                native_model("local-model", ("local-model", 32_768)),
+                native_model("other", ("local-model", 4_096)),
+            ]
+        },
+        {"models": {"local-model": 32_768}},
+        {},
+    ],
+    ids=[
+        "not-loaded-never-uses-max",
+        "string-length",
+        "zero-length",
+        "absurd-length",
+        "missing-config",
+        "malformed-sibling",
+        "unverifiable-sibling-instance",
+        "sibling-instance-without-length",
+        "instance-owned-model-with-invalid-sibling",
+        "ambiguous-identity",
+        "models-not-a-list",
+        "empty",
+    ],
+)
+def test_lm_studio_capacity_stays_unknown_without_exact_loaded_evidence(native: object) -> None:
+    adapter = lm_studio_capacity_adapter(native)
+    assert asyncio.run(adapter.context_window()) == ContextWindow(None, "unknown")
+
+
+def test_lm_studio_capacity_is_unknown_on_older_servers_and_leaves_discovery_alone() -> None:
+    adapter = lm_studio_capacity_adapter({"error": "not found"}, native_status=404)
+    assert asyncio.run(adapter.context_window()) == ContextWindow()
+    assert asyncio.run(adapter.discover_models()).models == ("local-model",)
+
+
+def _quote_heavy_invocation(limit: int) -> Invocation:
+    """A window whose compact public form fits `limit` but whose chat request does not.
+
+    Tool-call arguments are re-encoded as JSON strings on the chat wire, so every quote
+    inside them costs an escape there; the CLI payload keeps them as plain JSON.
+    """
+    arguments = {"query": '"' * 900}
+    messages = (
+        Message("user", "find"),
+        Message("assistant", "", tool_requests=(ToolRequest("one", "lookup", arguments),)),
+        Message("tool", '{"value":1}', tool_request_id="one", tool_name="lookup"),
+        Message("user", "and now?"),
+    )
+    return Invocation(messages, (), Limits(max_input_chars=limit))
+
+
+def test_public_form_sizing_alone_would_admit_a_request_chat_body_refuses() -> None:
+    profile = ModelProfile("profile", "provider", "model", False, True)
+    compact = cli_prompt_chars(_quote_heavy_invocation(10_000))
+    limit = compact + 50
+    invocation = _quote_heavy_invocation(limit)
+    # The CLI shape fits; the chat shape of the same window is larger and is refused.
+    assert cli_prompt_chars(invocation) <= limit
+    assert len(cli_bounded_prompt(invocation)) > 0
+    with pytest.raises(RuntimeFailure) as caught:
+        chat_body(profile, invocation)
+    assert caught.value.code == "input_limit_exceeded"
+    # The generic estimate never sits below either shape, so planning would not admit it.
+    estimate = estimate_prompt_chars(
+        invocation.messages, invocation.tools, invocation.output_schema
+    )
+    assert estimate > limit
+    assert estimate >= chat_prompt_chars(profile, invocation, stream=True)
+    assert estimate >= cli_prompt_chars(invocation)
+
+
+def test_adapters_size_prompts_exactly_as_their_own_checks_do() -> None:
+    invocation = _quote_heavy_invocation(10**6)
+    local = ProviderConnection(
+        "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+    )
+    profile = ModelProfile("profile", "provider", "model", False, True)
+    lmstudio = LMStudioAdapter(local, profile, lambda: httpx.AsyncClient())
+    expected = max(
+        chat_prompt_chars(profile, invocation, stream=stream) for stream in (False, True)
+    )
+    assert lmstudio.prompt_chars(invocation) == expected
+    # Sizing never applies the limit itself; the adapter's send-time check still does.
+    tight = Invocation(invocation.messages, (), Limits(max_input_chars=100))
+    assert lmstudio.prompt_chars(tight) == expected
+    with pytest.raises(RuntimeFailure):
+        chat_body(profile, tight)
+    remote = ProviderConnection(
+        "provider",
+        "openrouter",
+        ProcessingClass.EXTERNAL,
+        endpoint="https://openrouter.ai/api/v1",
+        credential_ref="env://LAR_TEST_KEY",
+        upstream="openai",
+    )
+    openrouter = OpenRouterAdapter(
+        remote,
+        ModelProfile("profile", "provider", "model", True, False),
+        lambda: httpx.AsyncClient(),
+    )
+    assert openrouter.prompt_chars(invocation) == chat_prompt_chars(
+        openrouter.profile, invocation, stream=False
+    )
+
+    async def unused_runner(
+        _args: Sequence[str],
+        _stdin: str | None,
+        _cwd: Path,
+        _environment: Mapping[str, str],
+        _timeout: float,
+    ) -> ProcessResult:
+        raise AssertionError("sizing never runs the CLI")
+
+    codex = CodexAdapter(
+        ProviderConnection("provider", "codex_cli", ProcessingClass.EXTERNAL, command="codex"),
+        ModelProfile("profile", "provider", "default", True, False),
+        runner=unused_runner,
+        which=lambda _: "/trusted/codex",
+        resolve=lambda path: path,
+    )
+    assert codex.prompt_chars(invocation) == cli_prompt_chars(invocation)
+    assert codex.prompt_chars(tight) == cli_prompt_chars(invocation)
+    with pytest.raises(RuntimeFailure):
+        cli_bounded_prompt(tight)

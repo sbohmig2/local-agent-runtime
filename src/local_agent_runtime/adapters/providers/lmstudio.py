@@ -8,7 +8,12 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
-from local_agent_runtime.adapters.chat_codec import ChatStreamDecoder, chat_body, decode_chat
+from local_agent_runtime.adapters.chat_codec import (
+    ChatStreamDecoder,
+    chat_body,
+    chat_body_chars,
+    decode_chat,
+)
 from local_agent_runtime.adapters.http_transport import (
     ClientFactory,
     default_client,
@@ -16,9 +21,11 @@ from local_agent_runtime.adapters.http_transport import (
     stream_json_sse,
 )
 from local_agent_runtime.configuration import validate_connection
+from local_agent_runtime.context import CAPACITY_SOURCE_PROVIDER_LOADED
 from local_agent_runtime.contracts import (
     Capabilities,
     CompletionResult,
+    ContextWindow,
     DiscoveredModel,
     HealthStatus,
     Invocation,
@@ -199,6 +206,44 @@ def _lmstudio_response_failure(payload: Mapping[str, Any]) -> RuntimeFailure | N
     return None
 
 
+def _loaded_context_length(native: object, model: str) -> int | None:
+    """Context length of the loaded instance(s) of exactly `model`, else None.
+
+    The configured identity must resolve to one native model, matched by its key
+    or by a loaded instance identifier. Any loaded instance of that model may
+    serve a request, so every instance must carry a valid `config.context_length`
+    and the smallest one is reported. A downloaded-but-unloaded model, an
+    unverifiable instance, a malformed entry, or an ambiguous identity reports
+    nothing; `max_context_length` is never substituted.
+    """
+
+    if not isinstance(native, list) or len(native) > 512:
+        return None
+    lengths: list[int] = []
+    owners = 0
+    for item in native:
+        if not isinstance(item, dict):
+            return None
+        instances = item.get("loaded_instances")
+        if not isinstance(instances, list):
+            return None
+        owns = item.get("key") == model or any(
+            isinstance(instance, dict) and instance.get("id") == model for instance in instances
+        )
+        if not owns or not instances:
+            continue
+        owners += 1
+        for instance in instances:
+            config = instance.get("config") if isinstance(instance, dict) else None
+            length = config.get("context_length") if isinstance(config, dict) else None
+            if type(length) is not int or not 0 < length <= 999_999_999:
+                return None
+            lengths.append(length)
+    if owners != 1 or not lengths:
+        return None
+    return min(lengths)
+
+
 @dataclass
 class LMStudioAdapter:
     connection: ProviderConnection
@@ -345,6 +390,26 @@ class LMStudioAdapter:
             details=details,
         )
 
+    async def context_window(self) -> ContextWindow:
+        """Report the loaded context of exactly the configured model, or unknown."""
+
+        try:
+            payload = await request_json(
+                self.client_factory,
+                "GET",
+                f"{(self.connection.endpoint or '').removesuffix('/v1')}/api/v1/models",
+                headers={},
+                timeout=5,
+                max_bytes=200_000,
+            )
+        except RuntimeFailure:
+            # Older servers expose only /v1/models; capacity stays unknown.
+            return ContextWindow()
+        tokens = _loaded_context_length(payload.get("models"), self.profile.model)
+        if tokens is None:
+            return ContextWindow()
+        return ContextWindow(tokens, CAPACITY_SOURCE_PROVIDER_LOADED)
+
     async def health(self) -> ProviderHealth:
         try:
             matched = self.profile.model in await self._catalog()
@@ -388,6 +453,15 @@ class LMStudioAdapter:
         if failure is not None:
             raise failure
         return self._checked_result(decode_chat(payload, invocation))
+
+    def prompt_chars(self, invocation: Invocation) -> int:
+        """The larger of the two request shapes this adapter may send for the invocation."""
+
+        unbounded = replace(invocation, limits=replace(invocation.limits, max_input_chars=2**62))
+        return max(
+            chat_body_chars(_lmstudio_chat_body(self.profile, unbounded, stream=stream))
+            for stream in (False, True)
+        )
 
     async def complete_streaming(
         self, invocation: Invocation, emit_text: TextDeltaSink

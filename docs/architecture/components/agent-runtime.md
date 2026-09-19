@@ -4,7 +4,7 @@ prefix: LAR
 status: active
 initiatives:
   - reusable-agent-runtime
-updated: 2026-09-09
+updated: 2026-09-16
 ---
 
 # Agent runtime
@@ -36,6 +36,10 @@ consumer-owned and must not be added to this package.
   unconstrained marketplace or arbitrary executable/endpoint selector.
 - Let consumer applications register bounded tool capabilities and execute them
   through their own authorization layer.
+- Treat consumer resource skills and active-action details as opaque context.
+  Never add consumer resource questions, interpretation rules, acquisition
+  recipes, field mappings, helper selection or fallback instructions to the
+  shared runtime.
 - Forward application-owned structured schemas as data-validation contracts,
   never as UI schemas or authorization to perform an action.
 - Preserve truthful capability differences. Token streaming, structured output,
@@ -49,6 +53,7 @@ consumer-owned and must not be added to this package.
 ## Tasks
 
 - LAR-012 — done — [Scope tool request identity per turn](../../tasks/done/LAR-012-scope-tool-request-identity-per-turn.md)
+- LAR-011 — review — [Bound conversation context](../../tasks/LAR-011-bound-conversation-context.md)
 - LAR-010 — done — [Harden LM Studio request compatibility](../../tasks/done/LAR-010-normalize-lm-studio-grammar-schemas.md)
 - LAR-009 — done — [Stream bounded assistant text](../../tasks/done/LAR-009-stream-bounded-assistant-text.md)
 - LAR-008 — done — [Expose provider-native web search](../../tasks/done/LAR-008-expose-provider-native-web-search.md)

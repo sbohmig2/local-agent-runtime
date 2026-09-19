@@ -8,6 +8,7 @@ import type {
   ModelOptionsResponse,
   ProfilesResponse,
   ReasoningProfile,
+  SessionContext,
   SessionEvent,
   SessionRequest,
   SessionResponse,
@@ -15,7 +16,7 @@ import type {
 } from "../generated.js";
 
 export const RUNTIME_PACKAGE_VERSION = "0.5.3";
-export const RUNTIME_API_VERSION = "1.4.0";
+export const RUNTIME_API_VERSION = "1.5.0";
 
 /** Provider-neutral effort vocabulary. A profile publishes the subset it supports. */
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -209,6 +210,7 @@ export interface HostEvent {
     | "session_started"
     | "model_working"
     | "assistant_text_delta"
+    | "context_reduced"
     | "tools_requested"
     | "tools_completed"
     | "approval_required"
@@ -226,6 +228,35 @@ export type HostSessionStatus =
   | "failed"
   | "canceled";
 
+/** How the runtime bounded the prompt of the most recent provider call. Counts only;
+ * the retained transcript is unchanged and a reduction never re-executes tools. */
+export interface HostSessionContext {
+  capacityTokens: number | null;
+  capacitySource: "provider_loaded" | "unknown";
+  estimatedPromptTokens: number | null;
+  basis: "estimate" | "calibrated" | null;
+  reduced: boolean;
+  droppedMessages: number;
+  /** The profile's configured allowance; never changed by the runtime. */
+  configuredOutputTokens: number | null;
+  /** What the most recent call could generate; below the configured value only
+   * for a known small context whose required prompt would not otherwise fit. */
+  allocatedOutputTokens: number | null;
+}
+
+export function toHostSessionContext(value: SessionContext): HostSessionContext {
+  return {
+    capacityTokens: value.capacity_tokens,
+    capacitySource: value.capacity_source,
+    estimatedPromptTokens: value.estimated_prompt_tokens,
+    basis: value.basis,
+    reduced: value.reduced,
+    droppedMessages: value.dropped_messages,
+    configuredOutputTokens: value.configured_output_tokens ?? null,
+    allocatedOutputTokens: value.allocated_output_tokens ?? null
+  };
+}
+
 export interface HostSession {
   id: string;
   profileId: string;
@@ -241,6 +272,8 @@ export interface HostSession {
   finalText: string | null;
   failureCode: string | null;
   eventCount: number;
+  /** Absent only when the runtime predates API 1.5.0. */
+  context?: HostSessionContext;
 }
 
 export interface StartSessionRequest {
