@@ -246,9 +246,10 @@ host event with camelCase counts; an unknown-capacity reduction keeps
 
 ## Artifact compatibility
 
-The current immutable Python and TypeScript release is version `0.6.0` with API
-`1.5.0` (session `context`, `context_reduced` added additively over `1.4.0`).
-Development head prepares the unreleased minor `0.7.0` with the same HTTP API.
+The current immutable Python and TypeScript release is version `0.7.0` with API
+`1.5.0`. It adds per-invocation Python native-web control and LM Studio
+structured-output parity without changing the HTTP contract. Version `0.6.0`
+added session `context` and `context_reduced` additively over API `1.4.0`.
 The host toolkit compares the API version exactly, so a candidate runtime needs
 the candidate client from the same build. A consumer pins both
 artifacts from the same release and keeps its lockfiles. Upgrade work should:

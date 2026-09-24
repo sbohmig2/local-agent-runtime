@@ -25,7 +25,7 @@ The project uses Python 3.13, uv, and Node.js 22+:
 An owner-authorized release is built from a clean checkout with
 `uv run python scripts/build_release.py`. It produces matching Python and
 TypeScript artifacts plus `dist/SHA256SUMS`; see the
-[v0.1.3 release notes](./docs/releases/v0.1.3.md).
+[v0.7.0 release notes](./docs/releases/v0.7.0.md).
 
 ## Local gateway
 

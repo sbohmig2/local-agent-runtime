@@ -291,6 +291,13 @@ None. Knowledge Vault MPR-005 depends on the release of this task.
   opt-in live test skipped, 52 TypeScript tests passed, and the type, package,
   documentation, and development-artifact checks passed. Release publication
   remains a separate step.
+- 2026-09-24: Stephan authorized the reviewed release flow. Commit
+  `d471b645e26c7e4e85503170255a3e7a93ba38f7` fast-forwarded to
+  `origin/main`; GitHub CI passed; annotated tag `v0.7.0` and the four immutable
+  GitHub release assets were published. A fresh download passed
+  `uv run python scripts/build_release.py --verify` with a checksum manifest
+  naming that source commit. The task remains in review pending owner closure;
+  publication does not itself close it.
 
 ## Residual risk
 
