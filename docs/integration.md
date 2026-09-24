@@ -33,6 +33,13 @@ providers receive the role-tagged conversation as one escaped JSON document,
 so the separation prevents structural prompt injection but is not a
 provider-enforced privilege boundary.
 
+A consumer that calls a provider adapter directly with an `Invocation` can set
+`provider_native_web=False`. The Codex, Claude, and Grok routes then run with
+every provider-native web tool disabled. This is the safe choice for unattended
+work over private content. The default, `True`, keeps native public-web search
+and fetch where the route supports it. Sessions created through the runtime
+service or HTTP gateway use the default.
+
 ## Node backend or language-independent consumer
 
 A Node backend can install the matching packed TypeScript client. Its root
@@ -241,6 +248,7 @@ host event with camelCase counts; an unknown-capacity reduction keeps
 
 The current immutable Python and TypeScript release is version `0.6.0` with API
 `1.5.0` (session `context`, `context_reduced` added additively over `1.4.0`).
+Development head prepares the unreleased minor `0.7.0` with the same HTTP API.
 The host toolkit compares the API version exactly, so a candidate runtime needs
 the candidate client from the same build. A consumer pins both
 artifacts from the same release and keeps its lockfiles. Upgrade work should:

@@ -56,7 +56,7 @@ class GrokAdapter(CLIAdapterBase):
             details=self.CATALOG,
         )
 
-    def environment(self, root: Path) -> dict[str, str]:
+    def environment(self, root: Path, *, native_web: bool = False) -> dict[str, str]:
         environment = _provider_environment("XAI_API_KEY")
         source = environment.get("HOME")
         if source:
@@ -66,9 +66,10 @@ class GrokAdapter(CLIAdapterBase):
                 "HOME": str(root),
                 "XDG_CONFIG_HOME": str(root),
                 "TMPDIR": str(root),
-                "GROK_WEB_FETCH": "1",
             }
         )
+        if native_web:
+            environment["GROK_WEB_FETCH"] = "1"
         return environment
 
     def auth_arguments(self, executable: str) -> None:
@@ -88,7 +89,13 @@ class GrokAdapter(CLIAdapterBase):
         path.chmod(0o600)
 
     def arguments(
-        self, executable: str, root: Path, schema: Path, effort: ReasoningEffort | None
+        self,
+        executable: str,
+        root: Path,
+        schema: Path,
+        effort: ReasoningEffort | None,
+        *,
+        native_web: bool,
     ) -> list[str]:
         args = [
             executable,
@@ -96,14 +103,28 @@ class GrokAdapter(CLIAdapterBase):
             str(root / "prompt.txt"),
             "--permission-mode",
             "dontAsk",
-            "--tools",
-            "web_search,web_fetch",
-            "--disallowed-tools",
-            "search_tool,use_tool",
-            "--allow",
-            "WebSearch",
-            "--allow",
-            "WebFetch",
+            *(
+                (
+                    "--tools",
+                    "web_search,web_fetch",
+                    "--disallowed-tools",
+                    "search_tool,use_tool",
+                    "--allow",
+                    "WebSearch",
+                    "--allow",
+                    "WebFetch",
+                )
+                if native_web
+                else (
+                    # No built-in tool, the web tools removed by name, and the
+                    # CLI's own switch that disables web search and fetch.
+                    "--tools",
+                    "",
+                    "--disallowed-tools",
+                    "search_tool,use_tool,web_search,web_fetch",
+                    "--disable-web-search",
+                )
+            ),
             "--no-subagents",
             "--no-plan",
             "--no-memory",

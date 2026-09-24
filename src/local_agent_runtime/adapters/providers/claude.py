@@ -78,7 +78,7 @@ class ClaudeAdapter(CLIAdapterBase):
             details=self.CATALOG,
         )
 
-    def environment(self, root: Path) -> dict[str, str]:
+    def environment(self, root: Path, *, native_web: bool = False) -> dict[str, str]:
         # The CLI resolves its stored login against the invoking account name, so a
         # bare environment reports an authenticated install as logged out.  USER is
         # an account label, never a credential.
@@ -97,7 +97,13 @@ class ClaudeAdapter(CLIAdapterBase):
         return None
 
     def arguments(
-        self, executable: str, root: Path, schema: Path, effort: ReasoningEffort | None
+        self,
+        executable: str,
+        root: Path,
+        schema: Path,
+        effort: ReasoningEffort | None,
+        *,
+        native_web: bool,
     ) -> list[str]:
         args = [
             executable,
@@ -112,10 +118,13 @@ class ClaudeAdapter(CLIAdapterBase):
             "--strict-mcp-config",
             "--mcp-config",
             '{"mcpServers":{}}',
-            "--tools",
-            "WebSearch,WebFetch",
-            "--allowedTools",
-            "WebSearch,WebFetch",
+            # `--tools ""` disables every built-in tool; the deny rule also
+            # outranks any allow rule a managed setting could add.
+            *(
+                ("--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch,WebFetch")
+                if native_web
+                else ("--tools", "", "--disallowedTools", "WebSearch,WebFetch")
+            ),
             "--permission-mode",
             "dontAsk",
             "--output-format",

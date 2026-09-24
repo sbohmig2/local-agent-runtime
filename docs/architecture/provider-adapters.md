@@ -29,6 +29,22 @@ search/fetch capability; provider account and administrator policy remain
 authoritative. Structured final responses are locally schema-validated;
 compatibility does not imply that every model will successfully produce them.
 
+Native web is also a consumer decision for each invocation. `Invocation`
+carries `provider_native_web`, which defaults to `true`. A consumer that sends
+private content can set it to `false` so that a route with the capability runs
+with every native web tool disabled (LAR-013):
+
+- Codex sends `web_search="disabled"` under `--strict-config`.
+- Claude sends `--tools ""` with a `WebSearch,WebFetch` deny rule.
+- Grok sends `--tools ""`, removes `web_search` and `web_fetch` by name, passes
+  `--disable-web-search`, and omits `GROK_WEB_FETCH`.
+
+The prompt then forbids every provider-native tool. The switch lives in the
+Python invocation contract, so deployment configuration cannot override it.
+Routes without the capability always send their disabled form, and the switch
+does not change HTTP routes. The session service and HTTP gateway keep the
+default for now; exposing the switch there would be an API change.
+
 To add a provider, implement the relevant port(s), register their factories,
 define validated connection/processing/credential rules, document provider
 constraints, and add deterministic contract/security tests. The application
@@ -54,13 +70,27 @@ provisional JSON is not a display-safe assistant answer. A completion remains
 authoritative and must exactly reconcile with the streamed text for that
 provider round; failure or cancellation emits no fabricated completion.
 
-LM Studio's grammar compiler rejects the otherwise valid JSON Schema string
-keywords `minLength` and `maxLength`. Its adapter recursively omits only those
-keywords from tool and structured-output schemas on the provider wire. The
-runtime retains the original application schemas unchanged and validates tool
+LM Studio's grammar compiler refused the otherwise valid JSON Schema string
+keywords `minLength` and `maxLength` in a tool input schema (LAR-010). Its
+adapter recursively omits only those keywords from tool input schemas on the
+provider wire. The structured-output (`response_format`) schema is sent
+unchanged, because LM Studio accepts and enforces its length bounds (LAR-013).
+The runtime retains the original application schemas unchanged and validates tool
 arguments and final structured output against those originals, so transport
-compatibility never relaxes the authoritative contract. Other adapters receive
-their existing request schemas unchanged.
+compatibility never relaxes the authoritative contract. A grammar refusal is an
+explicit failure; the adapter never retries with a weakened schema. Other
+adapters receive their existing request schemas unchanged.
+
+An LM Studio reasoning model may return a schema-bound answer in
+`reasoning_content` (or `reasoning`) with empty `content`. For a non-streaming
+invocation that has an output schema and no tools, and whose response carries
+neither content nor tool calls, the adapter accepts the first non-blank
+reasoning field as the answer. It must fit the ordinary output bound and parse
+as JSON. The application then validates it against the original schema.
+Non-empty content always wins. Unstructured or tool-bearing requests, streamed
+reasoning deltas, and every other adapter never promote reasoning text, so
+hidden free-form reasoning cannot become a final answer. The shared codec takes
+this as an explicit adapter opt-in rather than branching on a driver name.
 
 LM Studio may return a context-window overflow inside an HTTP-200 SSE error
 frame. The adapter classifies the bounded structured native error as

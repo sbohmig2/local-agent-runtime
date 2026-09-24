@@ -81,7 +81,44 @@ def chat_prompt_chars(profile: ModelProfile, invocation: Invocation, *, stream: 
     return chat_body_chars(chat_body(profile, unbounded, stream=stream))
 
 
-def decode_chat(payload: dict[str, Any], invocation: Invocation) -> CompletionResult:
+REASONING_CHANNEL_KEYS = ("reasoning_content", "reasoning")
+
+
+def _reasoning_channel_answer(
+    message: Mapping[str, Any], invocation: Invocation, failure: RuntimeFailure
+) -> str:
+    """Return a structured answer a provider placed in its reasoning channel.
+
+    The first non-blank reasoning field is the only candidate. It carries the same
+    output bound as ordinary content and must be a JSON value, so free-form hidden
+    reasoning can never become the final answer; the application still validates
+    it against the original output schema.
+    """
+
+    for key in REASONING_CHANNEL_KEYS:
+        candidate = message.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            if len(candidate) > invocation.limits.max_output_chars:
+                raise failure
+            json.loads(candidate)
+            return candidate
+    return ""
+
+
+def decode_chat(
+    payload: dict[str, Any],
+    invocation: Invocation,
+    *,
+    structured_reasoning_channel: bool = False,
+) -> CompletionResult:
+    """Decode one OpenAI-compatible completion.
+
+    `structured_reasoning_channel` is an adapter's explicit opt-in for providers
+    that may return a schema-bound answer in the reasoning channel with empty
+    content. It applies only to an invocation with an output schema and no tools,
+    and only when the provider returned neither content nor tool calls.
+    """
+
     failure = RuntimeFailure(
         "invalid_provider_response", "The provider returned invalid output", status_code=502
     )
@@ -120,6 +157,14 @@ def decode_chat(payload: dict[str, Any], invocation: Invocation) -> CompletionRe
             ):
                 raise failure
             requests.append(ToolRequest(call["id"], function["name"], args))
+        if (
+            structured_reasoning_channel
+            and invocation.output_schema is not None
+            and not invocation.tools
+            and not content.strip()
+            and not requests
+        ):
+            content = _reasoning_channel_answer(message, invocation, failure)
         if not content.strip() and not requests:
             raise failure
         return CompletionResult(

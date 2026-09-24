@@ -109,14 +109,20 @@ class CodexAdapter(CLIAdapterBase):
         except RuntimeFailure as exc:
             return ModelDiscovery(supported=True, detail_code=exc.code)
 
-    def environment(self, root: Path) -> dict[str, str]:
+    def environment(self, root: Path, *, native_web: bool = False) -> dict[str, str]:
         return _provider_environment("CODEX_HOME", "CODEX_CA_CERTIFICATE")
 
     def auth_arguments(self, executable: str) -> list[str]:
         return [executable, "login", "status"]
 
     def arguments(
-        self, executable: str, root: Path, schema: Path, effort: ReasoningEffort | None
+        self,
+        executable: str,
+        root: Path,
+        schema: Path,
+        effort: ReasoningEffort | None,
+        *,
+        native_web: bool,
     ) -> list[str]:
         args = [
             executable,
@@ -136,7 +142,9 @@ class CodexAdapter(CLIAdapterBase):
         ):
             args.extend(("--disable", feature))
         for setting in (
-            'web_search="live"',
+            # `disabled` is a documented variant of the installed CLI's
+            # `web_search` setting; `--strict-config` rejects unknown values.
+            'web_search="live"' if native_web else 'web_search="disabled"',
             # Project and user AGENTS.md files are untrusted third-party
             # instructions for a generic runtime, so this route never loads them.
             # It is not the sandbox fix: launching the resolved installation

@@ -4,7 +4,7 @@ prefix: LAR
 status: active
 initiatives:
   - reusable-agent-runtime
-updated: 2026-09-19
+updated: 2026-09-24
 ---
 
 # Agent runtime
@@ -52,6 +52,7 @@ consumer-owned and must not be added to this package.
 
 ## Tasks
 
+- LAR-013 — review — [Restore unattended structured-work parity](../../tasks/LAR-013-restore-unattended-structured-work-parity.md)
 - LAR-012 — done — [Scope tool request identity per turn](../../tasks/done/LAR-012-scope-tool-request-identity-per-turn.md)
 - LAR-011 — done — [Bound conversation context](../../tasks/done/LAR-011-bound-conversation-context.md)
 - LAR-010 — done — [Harden LM Studio request compatibility](../../tasks/done/LAR-010-normalize-lm-studio-grammar-schemas.md)

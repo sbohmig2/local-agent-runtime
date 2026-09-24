@@ -286,6 +286,11 @@ class Invocation:
     limits: Limits
     output_schema: Mapping[str, Any] | None = None
     reasoning_effort: ReasoningEffort | None = None
+    #: The consumer's per-invocation permission for provider-native public-web
+    #: search and page retrieval. `False` makes a route that has the capability
+    #: run with every native web tool disabled, which operator configuration
+    #: cannot re-enable. Routes without the capability never use native web.
+    provider_native_web: bool = True
 
 
 @dataclass(frozen=True)

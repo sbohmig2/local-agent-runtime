@@ -5,10 +5,11 @@ truth.
 
 ## In progress
 
-No task is currently in implementation.
+None.
 
 ## Review lane
 
+- [LAR-013 - Restore unattended structured-work parity](./LAR-013-restore-unattended-structured-work-parity.md)
 - [LAR-006 - Keep long-running event streams alive](./LAR-006-keep-long-running-event-streams-alive.md)
 
 ## Queued lane

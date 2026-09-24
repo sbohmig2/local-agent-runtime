@@ -129,18 +129,19 @@ def _grammar_compatible_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
 def _lmstudio_chat_body(
     profile: ModelProfile, invocation: Invocation, *, stream: bool = False
 ) -> dict[str, Any]:
-    """Translate only the provider wire schema; callers retain the original contract."""
+    """Translate only tool wire schemas; callers retain the original contract.
+
+    String-length keywords are omitted from tool input schemas, where LM Studio's
+    grammar compiler was observed to refuse them (LAR-010). The structured-output
+    schema is sent unchanged because LM Studio accepts and enforces its length
+    bounds (LAR-013), which the application's validation relies on.
+    """
 
     wire_invocation = replace(
         invocation,
         tools=tuple(
             replace(tool, input_schema=_grammar_compatible_schema(tool.input_schema))
             for tool in invocation.tools
-        ),
-        output_schema=(
-            _grammar_compatible_schema(invocation.output_schema)
-            if invocation.output_schema is not None
-            else None
         ),
     )
     return chat_body(profile, wire_invocation, stream=stream)
@@ -452,7 +453,12 @@ class LMStudioAdapter:
         failure = _lmstudio_response_failure(payload)
         if failure is not None:
             raise failure
-        return self._checked_result(decode_chat(payload, invocation))
+        # A reasoning model may return its schema-bound answer in the reasoning
+        # channel with empty content. The service never streams a schema-bound
+        # invocation, so only this non-streaming path needs the opt-in.
+        return self._checked_result(
+            decode_chat(payload, invocation, structured_reasoning_channel=True)
+        )
 
     def prompt_chars(self, invocation: Invocation) -> int:
         """The larger of the two request shapes this adapter may send for the invocation."""

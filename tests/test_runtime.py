@@ -358,6 +358,71 @@ def test_structured_output_uses_non_streaming_completion_path(tmp_path: Path) ->
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("summary_chars,status", [(200, "completed"), (201, "failed")])
+def test_lm_studio_reasoning_channel_answer_is_validated_against_the_original_schema(
+    tmp_path: Path, summary_chars: int, status: str
+) -> None:
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "status": {"const": "ready"},
+            "summary": {"type": "string", "maxLength": 200},
+        },
+        "required": ["status", "summary"],
+        "additionalProperties": False,
+    }
+    answer = json.dumps({"status": "ready", "summary": "s" * summary_chars})
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(404)
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "model",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "", "reasoning_content": answer},
+                    }
+                ],
+            },
+        )
+
+    async def run() -> None:
+        connection = ProviderConnection(
+            "local", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        )
+        profile = ModelProfile("reason", "local", "model", False, True)
+        config = RuntimeConfiguration(
+            {"local": connection}, {"reason": profile}, "reason", {"answer": "reason"}
+        )
+        app = RuntimeService(
+            config,
+            SelectionStore(tmp_path / "state"),
+            provider_factory=lambda found_connection, found_profile: LMStudioAdapter(
+                found_connection,
+                found_profile,
+                lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            ),
+        )
+        created = await app.create_session("hello", output_schema=output_schema)
+        settled = await app.wait(created["id"])
+        assert settled["status"] == status
+        assert len(bodies) == 1
+        assert bodies[0]["stream"] is False
+        assert bodies[0]["response_format"]["json_schema"]["schema"] == output_schema
+        if status == "completed":
+            assert settled["final_text"] == answer
+        else:
+            assert settled["failure"]["code"] == "schema_validation_failed"
+            assert settled["final_text"] is None
+
+    asyncio.run(run())
+
+
 def test_cancel_after_streamed_text_preserves_delta_without_completion(tmp_path: Path) -> None:
     async def run() -> None:
         app, fake = streaming_runtime(tmp_path)

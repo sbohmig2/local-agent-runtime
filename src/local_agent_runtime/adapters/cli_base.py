@@ -114,12 +114,23 @@ class CLIAdapterBase(ABC):
             )
         return effort
 
-    def environment(self, root: Path) -> dict[str, str]:
+    def native_web(self, invocation: Invocation) -> bool:
+        """Native web runs only where the route has it and the consumer permits it."""
+
+        return self.capabilities.provider_native_web and invocation.provider_native_web
+
+    def environment(self, root: Path, *, native_web: bool = False) -> dict[str, str]:
         return _safe_environment()
 
     @abstractmethod
     def arguments(
-        self, executable: str, root: Path, schema: Path, effort: ReasoningEffort | None
+        self,
+        executable: str,
+        root: Path,
+        schema: Path,
+        effort: ReasoningEffort | None,
+        *,
+        native_web: bool,
     ) -> list[str]: ...
 
     @abstractmethod
@@ -208,10 +219,8 @@ class CLIAdapterBase(ABC):
         executable = self.executable()
         if executable is None:
             raise provider_unavailable()
-        prompt = _bounded_prompt(
-            invocation,
-            allow_provider_native_web=self.capabilities.provider_native_web,
-        )
+        native_web = self.native_web(invocation)
+        prompt = _bounded_prompt(invocation, allow_provider_native_web=native_web)
         effort = self.requested_effort(invocation)
         with tempfile.TemporaryDirectory(prefix="lar-provider-") as directory:
             root = Path(directory)
@@ -219,8 +228,8 @@ class CLIAdapterBase(ABC):
             catalog = tuple(tool.name for tool in invocation.tools)
             schema.write_text(json.dumps(_output_schema(catalog)), encoding="utf-8")
             schema.chmod(0o600)
-            arguments = self.arguments(executable, root, schema, effort)
-            environment = self.environment(root)
+            arguments = self.arguments(executable, root, schema, effort, native_web=native_web)
+            environment = self.environment(root, native_web=native_web)
             try:
                 result = await self.runner(
                     arguments,

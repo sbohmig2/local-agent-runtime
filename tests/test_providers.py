@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -287,14 +288,12 @@ def test_reasoning_http_contract(remote: bool, monkeypatch: pytest.MonkeyPatch) 
     body = json.loads(observed[0].content)
     assert body["response_format"]["type"] == "json_schema"
     assert body["messages"] == [{"role": "user", "content": "hi"}]
+    # Both routes send the application's structured-output schema unchanged,
+    # including string-length bounds LM Studio enforces (LAR-013).
+    assert body["response_format"]["json_schema"]["schema"] == output_schema
     if remote:
         assert body["provider"]["only"] == ["openai"]
         assert body["provider"]["allow_fallbacks"] is False
-        assert body["response_format"]["json_schema"]["schema"] == output_schema
-    else:
-        assert body["response_format"]["json_schema"]["schema"]["properties"]["summary"] == {
-            "type": "string"
-        }
 
 
 def test_lm_studio_streams_display_text_across_arbitrary_sse_boundaries() -> None:
@@ -526,46 +525,324 @@ def test_lm_studio_stream_normalizes_nested_tool_grammar_without_mutating_contra
     assert summary_schema["properties"]["nested"]["items"]["maxLength"] == 20
 
 
-def test_lm_studio_nonstreaming_normalizes_structured_output_grammar() -> None:
-    output_schema: dict[str, Any] = {
+def lm_studio_adapter(handler: Any, profile: ModelProfile | None = None) -> LMStudioAdapter:
+    return LMStudioAdapter(
+        ProviderConnection(
+            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+        ),
+        profile or ModelProfile("profile", "provider", "model", False, True),
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+
+def nested_length_output_schema() -> dict[str, Any]:
+    """Object inside array inside object, each level carrying string-length bounds."""
+
+    return {
+        "type": "object",
+        "properties": {
+            "status": {"const": "ready"},
+            "summary": {"type": "string", "minLength": 1, "maxLength": 200},
+            "sections": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 5, "maxLength": 20},
+                        "body": {"type": "string", "maxLength": 80},
+                    },
+                    "required": ["title", "body"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["status", "summary"],
+        "additionalProperties": False,
+    }
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_lm_studio_sends_structured_output_length_bounds_and_strips_only_tool_grammar(
+    stream: bool,
+) -> None:
+    output_schema = nested_length_output_schema()
+    tool_schema: dict[str, Any] = {
         "type": "object",
         "properties": {"agent_summary": {"type": "string", "minLength": 1, "maxLength": 2_000}},
         "required": ["agent_summary"],
         "additionalProperties": False,
     }
+    original_output = json.loads(json.dumps(output_schema))
+    original_tool = json.loads(json.dumps(tool_schema))
+    observed: list[dict[str, Any]] = []
+    reply = {
+        "model": "model",
+        "choices": [{"finish_reason": "stop", "message": {"content": '{"status":"ready"}'}}],
+    }
+    frame = {
+        "model": "model",
+        "choices": [
+            {"index": 0, "delta": {"content": '{"status":"ready"}'}, "finish_reason": "stop"}
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(json.loads(request.content))
+        if stream:
+            return httpx.Response(
+                200, stream=FragmentedStream(f"data: {json.dumps(frame)}\n\n".encode())
+            )
+        return httpx.Response(200, json=reply)
+
+    adapter = lm_studio_adapter(handler)
+    invocation = Invocation(
+        (Message("user", "hi"),),
+        (ToolDefinition("operation_finalize", "Finalize the operation", tool_schema),),
+        Limits(),
+        output_schema=output_schema,
+    )
+
+    async def run() -> CompletionResult:
+        async def emit(_delta: str) -> None:
+            return None
+
+        if stream:
+            return await adapter.complete_streaming(invocation, emit)
+        return await adapter.complete(invocation)
+
+    assert asyncio.run(run()).text == '{"status":"ready"}'
+    assert len(observed) == 1
+    assert observed[0]["response_format"]["json_schema"]["schema"] == original_output
+    assert observed[0]["tools"][0]["function"]["parameters"]["properties"]["agent_summary"] == {
+        "type": "string"
+    }
+    assert output_schema == original_output
+    assert tool_schema == original_tool
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        # LM Studio's recorded llama.cpp refusal, as a compatible error payload.
+        httpx.Response(
+            200,
+            json={
+                "error": (
+                    "Engine protocol predict request returned 400: "
+                    '{"error":{"code":400,"message":"Failed to initialize samplers: '
+                    'failed to parse grammar","type":"invalid_request_error"}}'
+                    ". Error Data: n/a, Additional Data: n/a"
+                )
+            },
+        ),
+        httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": 400,
+                    "message": "Failed to initialize samplers: failed to parse grammar",
+                    "type": "invalid_request_error",
+                }
+            },
+        ),
+        httpx.Response(400, json={"error": {"message": "unrelated bad request"}}),
+    ],
+)
+def test_lm_studio_grammar_refusal_stays_explicit_without_retry_or_stripping(
+    response: httpx.Response,
+) -> None:
     observed: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         observed.append(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json={
-                "model": "model",
-                "choices": [
-                    {
-                        "finish_reason": "stop",
-                        "message": {"content": '{"agent_summary":"done"}'},
-                    }
-                ],
-            },
-        )
+        return response
 
-    adapter = LMStudioAdapter(
-        ProviderConnection(
-            "provider", "lmstudio", ProcessingClass.LOCAL, endpoint="http://127.0.0.1:1234/v1"
+    output_schema = nested_length_output_schema()
+    with pytest.raises(RuntimeFailure) as caught:
+        asyncio.run(
+            lm_studio_adapter(handler).complete(
+                Invocation((Message("user", "hi"),), (), Limits(), output_schema=output_schema)
+            )
+        )
+    assert caught.value.code in {"invalid_provider_response", "provider_unavailable"}
+    assert "grammar" not in str(caught.value)
+    assert len(observed) == 1
+    assert observed[0]["response_format"]["json_schema"]["schema"] == output_schema
+
+
+STRUCTURED_ANSWER = '{"status":"ready","summary":"done"}'
+TOOL_FOR_REASONING = ToolDefinition("lookup", "Look up a value", {"type": "object"})
+
+
+def reasoning_channel_reply(message: dict[str, Any], finish_reason: str = "stop") -> dict[str, Any]:
+    return {"model": "model", "choices": [{"finish_reason": finish_reason, "message": message}]}
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ({"content": "", "reasoning_content": STRUCTURED_ANSWER}, STRUCTURED_ANSWER),
+        ({"content": None, "reasoning": STRUCTURED_ANSWER}, STRUCTURED_ANSWER),
+        ({"reasoning_content": f"\n {STRUCTURED_ANSWER} \n"}, f"\n {STRUCTURED_ANSWER} \n"),
+        ({"content": "  \n", "reasoning_content": STRUCTURED_ANSWER}, STRUCTURED_ANSWER),
+        (
+            {"content": "", "reasoning_content": " ", "reasoning": STRUCTURED_ANSWER},
+            STRUCTURED_ANSWER,
         ),
-        ModelProfile("profile", "provider", "model", False, True),
-        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        # Non-empty content always wins over the reasoning channel.
+        (
+            {"content": '{"status":"ready","summary":"content"}', "reasoning_content": "{}"},
+            '{"status":"ready","summary":"content"}',
+        ),
+        (
+            {"content": '{"status":"ready","summary":"content"}', "reasoning": "thinking"},
+            '{"status":"ready","summary":"content"}',
+        ),
+    ],
+)
+def test_lm_studio_accepts_schema_bound_answer_from_reasoning_channel(
+    message: dict[str, Any], expected: str
+) -> None:
+    adapter = lm_studio_adapter(
+        lambda _: httpx.Response(200, json=reasoning_channel_reply(message))
     )
     result = asyncio.run(
         adapter.complete(
-            Invocation((Message("user", "hi"),), (), Limits(), output_schema=output_schema)
+            Invocation(
+                (Message("user", "hi"),),
+                (),
+                Limits(),
+                output_schema=nested_length_output_schema(),
+            )
         )
     )
-    wire_schema = observed[0]["response_format"]["json_schema"]["schema"]
-    assert result.text == '{"agent_summary":"done"}'
-    assert wire_schema["properties"]["agent_summary"] == {"type": "string"}
-    assert output_schema["properties"]["agent_summary"]["maxLength"] == 2_000
+    assert result.text == expected
+    assert result.tool_requests == ()
+
+
+@pytest.mark.parametrize(
+    "case,message,finish_reason,code",
+    [
+        # Hidden free-form reasoning is never promoted to the final answer.
+        (
+            "unstructured",
+            {"content": "", "reasoning_content": STRUCTURED_ANSWER},
+            "stop",
+            "invalid_provider_response",
+        ),
+        (
+            "tools",
+            {"content": "", "reasoning_content": STRUCTURED_ANSWER},
+            "stop",
+            "invalid_provider_response",
+        ),
+        (
+            "schema",
+            {"content": "", "reasoning_content": "Let me think about this."},
+            "stop",
+            "invalid_provider_response",
+        ),
+        (
+            "schema",
+            {"content": "", "reasoning": "reasoning-canary"},
+            "stop",
+            "invalid_provider_response",
+        ),
+        ("schema", {"content": "", "reasoning_content": ""}, "stop", "invalid_provider_response"),
+        ("schema", {"content": "", "reasoning_content": 7}, "stop", "invalid_provider_response"),
+        # The ordinary output bound applies to promoted text.
+        (
+            "bounded",
+            {"content": "", "reasoning_content": STRUCTURED_ANSWER},
+            "stop",
+            "invalid_provider_response",
+        ),
+        # An exhausted reasoning run stays incomplete (observed with ministral 3 8B).
+        (
+            "schema",
+            {"content": "", "reasoning_content": STRUCTURED_ANSWER},
+            "length",
+            "provider_incomplete",
+        ),
+    ],
+)
+def test_lm_studio_refuses_reasoning_channel_outside_schema_bound_answers(
+    case: str, message: dict[str, Any], finish_reason: str, code: str
+) -> None:
+    adapter = lm_studio_adapter(
+        lambda _: httpx.Response(200, json=reasoning_channel_reply(message, finish_reason))
+    )
+    invocation = Invocation(
+        (Message("user", "hi"),),
+        (TOOL_FOR_REASONING,) if case == "tools" else (),
+        Limits(max_output_chars=len(STRUCTURED_ANSWER) - 1) if case == "bounded" else Limits(),
+        output_schema=None if case == "unstructured" else nested_length_output_schema(),
+    )
+    with pytest.raises(RuntimeFailure) as caught:
+        asyncio.run(adapter.complete(invocation))
+    assert caught.value.code == code
+    assert "canary" not in str(caught.value)
+
+
+def test_lm_studio_stream_never_promotes_reasoning_deltas() -> None:
+    frames = [
+        {
+            "model": "model",
+            "choices": [{"index": 0, "delta": {"reasoning_content": STRUCTURED_ANSWER}}],
+        },
+        {"model": "model", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]
+    content = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames).encode()
+    adapter = lm_studio_adapter(lambda _: httpx.Response(200, stream=FragmentedStream(content)))
+    emitted: list[str] = []
+
+    async def run() -> None:
+        async def emit(delta: str) -> None:
+            emitted.append(delta)
+
+        await adapter.complete_streaming(
+            Invocation(
+                (Message("user", "hi"),), (), Limits(), output_schema=nested_length_output_schema()
+            ),
+            emit,
+        )
+
+    with pytest.raises(RuntimeFailure) as caught:
+        asyncio.run(run())
+    assert caught.value.code == "invalid_provider_response"
+    assert emitted == []
+
+
+def test_openrouter_never_promotes_reasoning_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LAR_TEST_KEY", "test-token")
+    reply = reasoning_channel_reply({"content": "", "reasoning": STRUCTURED_ANSWER})
+    adapter = OpenRouterAdapter(
+        ProviderConnection(
+            "provider",
+            "openrouter",
+            ProcessingClass.EXTERNAL,
+            endpoint="https://openrouter.ai/api/v1",
+            credential_ref="env://LAR_TEST_KEY",
+            upstream="openai",
+        ),
+        ModelProfile("profile", "provider", "model", True, False),
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, json=reply))
+        ),
+    )
+    with pytest.raises(RuntimeFailure) as caught:
+        asyncio.run(
+            adapter.complete(
+                Invocation(
+                    (Message("user", "hi"),),
+                    (),
+                    Limits(),
+                    output_schema=nested_length_output_schema(),
+                )
+            )
+        )
+    assert caught.value.code == "invalid_provider_response"
 
 
 def test_streaming_request_fields_are_inside_the_input_character_bound() -> None:
@@ -1319,6 +1596,175 @@ def native_payload(driver: str) -> str:
     if driver == "grok_cli":
         payload = {"text": "ignored", "stopReason": "end_turn", "structuredOutput": payload}
     return json.dumps(payload)
+
+
+WEB_ENABLED_ARGUMENTS: dict[str, list[str]] = {
+    "codex_cli": ["--config", 'web_search="live"'],
+    "claude_cli": ["--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch,WebFetch"],
+    "grok_cli": [
+        "--tools",
+        "web_search,web_fetch",
+        "--disallowed-tools",
+        "search_tool,use_tool",
+        "--allow",
+        "WebSearch",
+        "--allow",
+        "WebFetch",
+    ],
+}
+WEB_DISABLED_ARGUMENTS: dict[str, list[str]] = {
+    "codex_cli": ["--config", 'web_search="disabled"'],
+    "claude_cli": ["--tools", "", "--disallowedTools", "WebSearch,WebFetch"],
+    "grok_cli": [
+        "--tools",
+        "",
+        "--disallowed-tools",
+        "search_tool,use_tool,web_search,web_fetch",
+        "--disable-web-search",
+    ],
+}
+
+
+def contains_run(args: Sequence[str], run: Sequence[str]) -> bool:
+    return any(list(args[index : index + len(run)]) == list(run) for index in range(len(args)))
+
+
+@pytest.mark.parametrize("native_web", [None, True, False])
+@pytest.mark.parametrize("driver", sorted(CLI_ADAPTERS))
+def test_consumer_controls_provider_native_web_per_invocation(
+    driver: str, native_web: bool | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    observed: list[tuple[list[str], str, Mapping[str, str]]] = []
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        if "sessions" in args:
+            return ProcessResult(0, "", "")
+        prompt = stdin if stdin is not None else (cwd / "prompt.txt").read_text()
+        observed.append((list(args), prompt, dict(environment)))
+        return ProcessResult(0, native_payload(driver), "")
+
+    adapter_type, command = CLI_ADAPTERS[driver]
+    adapter = adapter_type(
+        ProviderConnection("provider", driver, ProcessingClass.EXTERNAL, command=command),
+        ModelProfile("test", "provider", "exact-model", True, False),
+        runner,
+        lambda _: "/trusted/" + command,
+        lambda path: path,
+    )
+    invocation = Invocation((Message("user", "private-canary"),), (), Limits())
+    if native_web is not None:
+        invocation = replace(invocation, provider_native_web=native_web)
+    asyncio.run(adapter.complete(invocation))
+    args, prompt, environment = observed[0]
+    enabled = native_web is not False
+    # The route still reports what it can do; the consumer decides per invocation.
+    assert adapter.capabilities.provider_native_web is True
+    assert contains_run(args, WEB_ENABLED_ARGUMENTS[driver]) is enabled
+    assert contains_run(args, WEB_DISABLED_ARGUMENTS[driver]) is not enabled
+    assert ("native public-web search and page-retrieval" in prompt) is enabled
+    assert ("Do not use any provider-native tool" in prompt) is not enabled
+    if driver == "grok_cli":
+        assert ("GROK_WEB_FETCH" in environment) is enabled
+    if not enabled:
+        assert "--allow" not in args
+        assert "--allowedTools" not in args
+        assert 'web_search="live"' not in args
+        assert all(item != "web_search,web_fetch" for item in args)
+    # Every other isolation control is identical in both modes.
+    if driver == "codex_cli":
+        assert "permissions.lar-reasoning.network.enabled=false" in args
+        assert "--ignore-user-config" in args
+    elif driver == "claude_cli":
+        assert {"--safe-mode", "--restricted", "--strict-mcp-config"} <= set(args)
+        assert args[args.index("--permission-mode") + 1] == "dontAsk"
+    else:
+        assert {"--no-subagents", "--no-memory"} <= set(args)
+        assert args[args.index("--permission-mode") + 1] == "dontAsk"
+
+
+def test_invocations_permit_provider_native_web_by_default() -> None:
+    assert Invocation((Message("user", "hi"),), (), Limits()).provider_native_web is True
+
+
+def test_route_without_native_web_capability_sends_disabled_form_even_when_permitted() -> None:
+    observed: list[list[str]] = []
+
+    async def runner(
+        args: Sequence[str],
+        stdin: str | None,
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> ProcessResult:
+        observed.append(list(args))
+        return ProcessResult(0, '{"content":"answer","tool_calls":[]}', "")
+
+    class NoNativeWebAdapter(CodexAdapter):
+        @property
+        def capabilities(self) -> Capabilities:
+            return Capabilities()
+
+    adapter = NoNativeWebAdapter(
+        ProviderConnection("provider", "codex_cli", ProcessingClass.EXTERNAL, command="codex"),
+        ModelProfile("test", "provider", "exact-model", True, False),
+        runner,
+        lambda _: "/trusted/codex",
+        lambda path: path,
+    )
+    asyncio.run(adapter.complete(Invocation((Message("user", "hi"),), (), Limits())))
+    assert 'web_search="disabled"' in observed[0]
+    assert 'web_search="live"' not in observed[0]
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_http_routes_are_unaffected_by_the_native_web_permission(
+    remote: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LAR_TEST_KEY", "test-token")
+    bodies: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": "model",
+                "choices": [{"finish_reason": "stop", "message": {"content": "hello"}}],
+            },
+        )
+
+    connection = ProviderConnection(
+        "provider",
+        "openrouter" if remote else "lmstudio",
+        ProcessingClass.EXTERNAL if remote else ProcessingClass.LOCAL,
+        endpoint="https://openrouter.ai/api/v1" if remote else "http://127.0.0.1:1234/v1",
+        credential_ref="env://LAR_TEST_KEY" if remote else None,
+        upstream="openai" if remote else None,
+    )
+    profile = ModelProfile("profile", "provider", "model", remote, False)
+
+    def factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    adapter = (
+        OpenRouterAdapter(connection, profile, factory)
+        if remote
+        else LMStudioAdapter(connection, profile, factory)
+    )
+    for permitted in (True, False):
+        invocation = Invocation(
+            (Message("user", "hi"),), (), Limits(), provider_native_web=permitted
+        )
+        asyncio.run(adapter.complete(invocation))
+    assert adapter.capabilities.provider_native_web is False
+    assert bodies[0] == bodies[1]
 
 
 @pytest.mark.parametrize(

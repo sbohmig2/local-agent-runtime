@@ -22,6 +22,20 @@ or arbitrary provider-native tools. LM Studio and OpenRouter report the
 capability as false; a consuming application may separately supply a bounded
 web-search tool through the ordinary tool-call contract.
 
+A Python consumer can withhold native web for one invocation with
+`Invocation(provider_native_web=False)`. Use this for unattended work over
+private content, where a prompt-injected document could otherwise make the
+model fetch an attacker URL. The disabled forms were checked against the
+installed CLIs on 2026-09-23:
+
+- Codex 0.155.1's configuration parser lists `web_search` variants `disabled`,
+  `cached`, `indexed`, and `live`, and rejects anything else.
+- Claude 2.1.280 documents `--tools ""` as disabling every built-in tool.
+- Grok 1.0.34 documents `--disable-web-search` as disabling web search and web
+  fetch.
+- Codex and Grok both parse their disabled argument forms, and reject an
+  unknown flag in the same position.
+
 ## Reasoning effort and discovery
 
 | Route | Effort control | Levels the route can send | Model discovery |
@@ -137,6 +151,25 @@ one in six, but it has not eliminated it. The runtime refuses those turns with
 `unknown_tool_request` rather than executing an unlisted tool or repairing the
 name, so the route is available and protocol-compatible but is not yet qualified
 for unattended tool-assisted work.
+
+LM Studio schema grammar support depends on its engine version. On 2026-09-10
+its llama.cpp engine refused a tool input schema with nested `minLength` and
+`maxLength` (`Failed to initialize samplers: failed to parse grammar`), so the
+adapter omits those two keywords from tool input schemas on the wire. On
+2026-09-23, llama.cpp engine 2.41.0 with `ministral-3-8b-instruct-2512` accepted
+and enforced them in `response_format`: a 200-character bound held on 3/3 runs
+where the unbounded schema produced 224 to 377 characters, and nested bounds held
+inside an array of objects. The same engine also accepted the tool shape
+refused on 2026-09-10. The structured-output schema is therefore sent unchanged
+([provider adapters](../architecture/provider-adapters.md)). An engine that
+refuses a grammar fails explicitly and is never retried with a weakened schema.
+
+Some LM Studio reasoning models return a schema-bound answer in
+`reasoning_content` with empty `content`. Qwen did this on 2026-08-05.
+`ministral-3-8b-instruct-2512` instead writes free-form reasoning there, and may
+stop with `finish_reason: length` and no content. The adapter accepts only a
+bounded JSON reasoning answer for a structured, tool-free, non-streaming
+request, and reports the exhausted run as `provider_incomplete`.
 
 ## Qualification
 

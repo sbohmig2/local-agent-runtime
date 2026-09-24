@@ -15,4 +15,5 @@ owned operations.
 - [v0.5.2](./v0.5.2.md) - stable, redacted LM Studio context-window failure classification.
 - [v0.5.3](./v0.5.3.md) - tool request identity scoped to the turn, not the session.
 - [v0.6.0](./v0.6.0.md) - capacity-bounded conversation context with explicit, counts-only reductions.
+- [v0.7.0](./v0.7.0.md) - per-invocation native-web control and LM Studio structured-output parity.
 - [v0.2.0](./v0.2.0.md) - model selection, reasoning controls, and managed adapter catalog.
